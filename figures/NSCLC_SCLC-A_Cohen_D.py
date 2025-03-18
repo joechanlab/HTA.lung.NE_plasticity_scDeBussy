@@ -1,0 +1,298 @@
+import os
+import pickle
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy import stats
+from scipy.stats import gaussian_kde
+from statsmodels.stats.multitest import multipletests
+from tqdm import tqdm
+from pygam import LinearGAM, s
+from scDeBussy.pp import stratified_downsample
+from scDeBussy import aligner
+
+def cohens_d(x, y):
+    nx, ny = len(x), len(y)
+    dof = nx + ny - 2
+    pooled_std = np.sqrt(((nx - 1) * np.std(x, ddof=1) ** 2 + (ny - 1) * np.std(y, ddof=1) ** 2) / dof)
+    return (np.mean(x) - np.mean(y)) / pooled_std if pooled_std > 0 else 0
+
+def calculate_std_threshold(effect_sizes, multiplier=1):
+    """
+    Calculate the effect size threshold using the mean and standard deviation of effect sizes.
+    
+    Parameters:
+        effect_sizes (list or np.array): List of effect sizes (Cohen's d).
+        multiplier (float): Multiplier for the standard deviation.
+    
+    Returns:
+        float: The calculated effect size threshold.
+    """
+    mean_effect = np.mean(effect_sizes)
+    std_effect = np.std(effect_sizes)
+    return mean_effect + multiplier * std_effect
+
+def compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bins, p_value_threshold):
+    """
+    Compute enrichment scores for a gene set across pseudotime bins.
+    
+    Parameters:
+        df (pd.DataFrame): The input dataframe.
+        gene_set (list): List of genes in the gene set.
+        pseudotime_col (str): Column name for pseudotime.
+        subject_col (str): Column name for subject identifiers.
+        num_bins (int): Number of pseudotime bins.
+        p_value_threshold (float): P-value threshold for significance.
+        effect_size_thresholds (list or None): List of effect size thresholds. If None, std-based threshold is used.
+    
+    Returns:
+        dict: Dictionary mapping effect size thresholds to enrichment results.
+        list: List of effect size thresholds used in the analysis.
+    """
+    df['pseudotime_bin'] = pd.cut(df[pseudotime_col], bins=num_bins, labels=False)
+    results = {}
+    
+    # Precompute effect sizes and p-values for all patients and bins
+    effect_sizes = {}
+    p_values = {}
+    
+    for b in range(num_bins):
+        subset = df[df['pseudotime_bin'] == b]
+        patients = subset[subject_col].unique()
+        
+        effect_sizes[b] = {}
+        p_values[b] = {}
+        
+        for patient in patients:
+            patient_data = subset[subset[subject_col] == patient]
+            
+            gene_set_expr = patient_data[gene_set].values.flatten()
+            background_expr = patient_data.drop(columns=gene_set + [subject_col, pseudotime_col, 'pseudotime_bin']).values.flatten()
+            
+            effect_size = cohens_d(gene_set_expr, background_expr)
+            effect_sizes[b][patient] = effect_size
+            
+            t_stat, p_value = stats.ttest_ind(gene_set_expr, background_expr)
+            p_values[b][patient] = p_value
+    
+    # Calculate std-based threshold if effect_size_thresholds is None
+
+    all_effect_sizes = [effect_sizes[b][patient] for b in range(num_bins) for patient in df[subject_col].unique()]
+    effect_size_threshold = calculate_std_threshold(all_effect_sizes)
+    
+    # Compute enrichment scores for each threshold
+    bin_centers, enrichment_scores, patient_proportions, standard_errors = [], [], [], []
+    
+    for b in range(num_bins):
+        subset = df[df['pseudotime_bin'] == b]
+        patients = subset[subject_col].unique()
+        
+        if len(patients) == 0:
+            bin_centers.append(np.nan)
+            enrichment_scores.append(0)
+            patient_proportions.append(0)
+            standard_errors.append(0)
+            continue
+        
+        patient_scores = [effect_sizes[b][patient] for patient in patients]
+        patient_p_values = [p_values[b][patient] for patient in patients]
+        
+        _, adjusted_p_values, _, _ = multipletests(patient_p_values, method='fdr_bh')
+        significant_patients = sum((abs(score) > effect_size_threshold) & (adj_p < p_value_threshold) 
+                                for score, adj_p in zip(patient_scores, adjusted_p_values))
+        
+        bin_centers.append(df[df['pseudotime_bin'] == b][pseudotime_col].mean())
+        enrichment_scores.append(np.mean(patient_scores))
+        standard_errors.append(np.std(patient_scores) / np.sqrt(len(patient_scores)))
+        patient_proportions.append(significant_patients / len(patients))
+        
+        enrichment_df = pd.DataFrame({
+            'pseudotime': bin_centers,
+            'enrichment': enrichment_scores,
+            'standard_error': standard_errors,
+            'patient_proportion': patient_proportions
+        }).dropna()
+        
+    return enrichment_df
+
+def plot_enrichment_results(df, gene_set_name):
+    """
+    Plots enrichment results for a gene set, including Cohen's D with error bars, GAM fit, and patient proportions.
+    
+    Parameters:
+        df (pd.DataFrame): The input dataframe containing pseudotime, enrichment, standard_error, and patient_proportion.
+        gene_set_name (str): Name of the gene set being plotted.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(5, 6), sharex=True)
+    
+    # GAM fitting on averaged enrichment scores
+    gam_enrichment = LinearGAM(s(0, n_splines=15)).fit(df[['pseudotime']], df['enrichment'])
+    x_vals = np.linspace(df['pseudotime'].min(), df['pseudotime'].max(), 100)
+    y_pred = gam_enrichment.predict(x_vals)
+    
+    # Plot Cohen's D with error bars and GAM fit
+    ax1.errorbar(df['pseudotime'], df['enrichment'], yerr=df['standard_error'], fmt='o', alpha=0.5, label='Binned Averages')
+    ax1.plot(x_vals, y_pred, color='black', label='GAM Fit')
+    
+    # Plot patient proportions
+    ax2.plot(df['pseudotime'], df['patient_proportion'], color='blue', label='Patient Proportion')
+    
+    # Set labels and titles
+    ax1.set_ylabel("Effect Size (Cohen's d)")
+    ax1.set_title(f"Gene Set Enrichment: {gene_set_name}")
+    ax1.legend()
+    
+    ax2.set_xlabel("Pseudotime")
+    ax2.set_ylabel("Proportion of Enriched Patients")
+    ax2.legend()
+    ax2.set_title(f"Proportion of Patients with Significant Enrichment: {gene_set_name}")
+    
+    plt.tight_layout()
+    plt.show()
+
+def compute_gene_set_enrichment(df, gene_set, gene_set_name, pseudotime_col='aligned_score', subject_col='subject',
+                                            num_bins=10, p_value_threshold=0.05):
+    gene_set = [gene for gene in gene_set if gene in df.columns]
+    results = compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bins, p_value_threshold)
+    plot_enrichment_results(results, gene_set_name)
+    return results
+
+def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None, color="royalblue", save_path=None):
+    """
+    Plots Cohen's D with error bars and GAM fit for multiple gene sets as a stacked ridge plot,
+    and fills the bottom with color corresponding to the smoothed recurrence score (e.g., patient_proportion),
+    varying along the x-axis and filled until the y_pred (GAM fit), without axis lines, ticks, and labels.
+
+    Parameters:
+        results (dict): Dictionary mapping gene set names to their enrichment results.
+        figsize (tuple): Size of the figure.
+        fontsize (int): Font size for labels.
+        short_labels (dict, optional): Dictionary mapping full gene set names to shortened labels.
+        color (str, optional): Color for all plots (default: "royalblue").
+    """
+    num_gene_sets = len(results)
+    fig, axes = plt.subplots(num_gene_sets, 1, figsize=figsize, sharex=True, constrained_layout=True)
+
+    if num_gene_sets == 1:  # Ensure axes is always iterable
+        axes = [axes]
+
+    for ax, (gene_set, df) in zip(axes, results.items()):
+        x_vals = df['pseudotime']
+        y_vals = df['enrichment']
+        y_errs = df['standard_error']
+
+        # Plot Cohen's D with subtle error bars
+        ax.errorbar(
+            x_vals, y_vals, yerr=y_errs, fmt='o', color=color, alpha=0.5, 
+            elinewidth=0.8, capsize=2, capthick=0.8
+        )
+
+        # GAM fit for the enrichment scores
+        gam = LinearGAM(s(0, n_splines=10)).fit(x_vals, y_vals)
+        x_smooth = np.linspace(x_vals.min(), x_vals.max(), 100)
+        y_pred = gam.predict(x_smooth)
+        ax.plot(x_smooth, y_pred, color=color, lw=2)
+
+        # Fill the bottom with color corresponding to the smoothed recurrence score (patient_proportion)
+        smoothed_patient_prop = np.interp(x_smooth, x_vals, df['patient_proportion'].values)  # Interpolation to match x_smooth
+        vmin = 0
+        vmax = smoothed_patient_prop.max()
+        norm_scores = (smoothed_patient_prop - vmin) / (vmax - vmin)
+        cmap = plt.cm.Blues
+        # Color the bottom with patient_proportion values, varying along the x-axis and filled until y_pred
+        for i in range(len(x_smooth)-1):
+            if smoothed_patient_prop[i] > 0:
+                colors = cmap(np.full(len(x_smooth), norm_scores))
+                ax.fill_between(x_smooth[i:i+2], y_pred[i:i+2], color=colors[i], alpha=0.8)
+
+        # Calculate y-axis limits for this subplot, taking error bars into account
+        y_min = min((y_vals - y_errs).min(), y_pred.min())  # Minimum of enrichment scores (with error bars) and GAM predictions
+        y_max = max((y_vals + y_errs).max(), y_pred.max())  # Maximum of enrichment scores (with error bars) and GAM predictions
+
+        # Add some padding to the y-axis limits
+        padding = (y_max - y_min) * 0.1  # 10% padding
+        y_min -= padding
+        y_max += padding
+
+        # Set y-axis limits for this subplot
+        ax.set_ylim(y_min, y_max)
+
+        # Remove axis lines, ticks, and labels
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        
+        ax.tick_params(axis="both", which="both", length=0)  # Remove ticks
+
+        # Use shortened label if provided, else use full gene set name
+        y_label = short_labels.get(gene_set, gene_set) if short_labels else gene_set
+        ax.set_ylabel(y_label, fontsize=fontsize, rotation=0, labelpad=50)
+        ax.set_xticklabels([])  # Remove x-axis labels
+        ax.set_yticklabels([])  # Remove y-axis labels
+
+    axes[-1].set_xlabel("Pseudotime", fontsize=fontsize)
+
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        print(f"Figure saved to {save_path}")
+    plt.show()
+
+def read_gmt(gmt_file):
+    gene_sets = {}
+    with open(gmt_file, 'r') as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            gene_set_name = parts[0]
+            gene_set = parts[2:]
+            gene_sets[gene_set_name] = gene_set
+    return gene_sets
+
+os.chdir("/data1/chanj3/HTA.lung.NE_plasticity.120122/fresh.SCLC_NSCLC.062124/results_all_genes/preprocessing")
+df = pd.read_csv('NSCLC_SCLC-A/cellrank.NSCLC_SCLC-A.csv', index_col=0)
+counts = pd.read_csv('NSCLC_SCLC-A/counts.NSCLC_SCLC-A.csv', index_col=0)
+all_genes = set(counts.columns[2:(counts.shape[1] - 9)])
+clusters = ["NSCLC", "SCLC-A"]
+downsample = 1500
+df = df.groupby('subject').apply(lambda group: stratified_downsample(group, 'score', downsample)).reset_index(drop=True)
+
+aligned_obj = aligner(df=df, 
+                            cluster_ordering=clusters, 
+                            subject_col='subject', 
+                            score_col='score', 
+                            cell_id_col='cell_id', 
+                            cell_type_col='cell_type',
+                            verbose=False)
+aligned_obj.align()
+df = aligned_obj.df
+df_columns_selected = ['subject', 'aligned_score']
+df_columns_selected = df_columns_selected + df.columns[11:].values.tolist()
+# get the cellmarker gene set genes
+cellmarker_path = "/data1/chanj3/wangm10/gene_sets/CellMarker_2024.txt"
+cellmarker_gene_set = read_gmt(cellmarker_path)
+gene_sets_of_interest = ['Secretory Cell Lung Human', 'Basal Cell Lung Human', 'Cycling Basal Cell Trachea Mouse', 
+                        'Neural Progenitor Cell Embryonic Prefrontal Cortex Human', 'Neuroendocrine Cell Trachea Mouse'] # 'Mesenchymal Stem Cell Undefined Human', 
+names = ['Secretory', 'Basal', 'Cycling Basal', 'Neural Progenitor',  "Neuroendocrine"] 
+cellmarker_short_labels = dict(zip(gene_sets_of_interest, names))
+cellmarker_results = {}
+# compute the enrichment for each gene set
+for gene_set in gene_sets_of_interest:
+    genes = cellmarker_gene_set[gene_set]
+    enrichment = compute_gene_set_enrichment(df.loc[:,df_columns_selected], genes, gene_set, 
+                                                           num_bins=15, p_value_threshold=0.05)
+    cellmarker_results[gene_set] = enrichment
+plot_cohens_d_ridge(cellmarker_results, short_labels=cellmarker_short_labels, figsize=(5, 4), save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/cell_marker_ridge.png")
+
+# get the pathway gene set genes
+with open("/data1/chanj3/morrill1/projects/HTA/data/biological_reference/spectra_gene_sets/Spectra.NE_NonNE.gene_sets.p", "rb") as infile:
+    pathway_gene_set = pickle.load(infile)['global']
+gene_sets_of_interest = ['all_TNF-via-NFkB_signaling', 'all_IL6-JAK-STAT3_signaling', 'all_PI3K-AKT-mTOR_signaling',  'all_MYC_targets', 'all_DNA-repair']
+names = ['NFkB', "JAK-STAT3", "PI3K-AKT", 'MYC',  'DNA repair']
+pathway_short_labels = dict(zip(gene_sets_of_interest, names))
+pathway_results = {}
+for gene_set in gene_sets_of_interest:
+    genes = pathway_gene_set[gene_set]
+    enrichment = compute_gene_set_enrichment(df.loc[:,df_columns_selected], genes, gene_set, 
+                                                           num_bins=15, p_value_threshold=0.05)
+    pathway_results[gene_set] = enrichment
+plot_cohens_d_ridge(pathway_results, short_labels=pathway_short_labels, figsize=(5, 4), save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/pathway_ridge.png")
