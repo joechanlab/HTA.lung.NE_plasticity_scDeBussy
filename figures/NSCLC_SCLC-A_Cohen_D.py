@@ -160,8 +160,7 @@ def compute_gene_set_enrichment(df, gene_set, gene_set_name, pseudotime_col='ali
 def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None, color="royalblue", save_path=None):
     """
     Plots Cohen's D with error bars and GAM fit for multiple gene sets as a stacked ridge plot,
-    and fills the bottom with color corresponding to the smoothed recurrence score (e.g., patient_proportion),
-    varying along the x-axis and filled until the y_pred (GAM fit), without axis lines, ticks, and labels.
+    with a heatmap track below each ridge plot representing the patient_proportion values.
 
     Parameters:
         results (dict): Dictionary mapping gene set names to their enrichment results.
@@ -169,19 +168,23 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         fontsize (int): Font size for labels.
         short_labels (dict, optional): Dictionary mapping full gene set names to shortened labels.
         color (str, optional): Color for all plots (default: "royalblue").
+        save_path (str, optional): Path to save the figure. If None, the figure is not saved.
     """
     num_gene_sets = len(results)
-    fig, axes = plt.subplots(num_gene_sets, 1, figsize=figsize, sharex=True, constrained_layout=True)
+    fig, axes = plt.subplots(num_gene_sets, 1, figsize=figsize, sharex=True, constrained_layout=True, 
+                             gridspec_kw={'height_ratios': [4] * num_gene_sets})
 
     if num_gene_sets == 1:  # Ensure axes is always iterable
         axes = [axes]
 
+    # Plot ridge plots and heatmap tracks for each gene set
     for ax, (gene_set, df) in zip(axes, results.items()):
         x_vals = df['pseudotime']
         y_vals = df['enrichment']
         y_errs = df['standard_error']
+        patient_proportion = df['patient_proportion']
 
-        # Plot Cohen's D with subtle error bars
+        # Plot Cohen's D with subtle error bars on the ridge plot
         ax.errorbar(
             x_vals, y_vals, yerr=y_errs, fmt='o', color=color, alpha=0.5, 
             elinewidth=0.8, capsize=2, capthick=0.8
@@ -193,19 +196,7 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         y_pred = gam.predict(x_smooth)
         ax.plot(x_smooth, y_pred, color=color, lw=2)
 
-        # Fill the bottom with color corresponding to the smoothed recurrence score (patient_proportion)
-        smoothed_patient_prop = np.interp(x_smooth, x_vals, df['patient_proportion'].values)  # Interpolation to match x_smooth
-        vmin = 0
-        vmax = smoothed_patient_prop.max()
-        norm_scores = (smoothed_patient_prop - vmin) / (vmax - vmin)
-        cmap = plt.cm.Blues
-        # Color the bottom with patient_proportion values, varying along the x-axis and filled until y_pred
-        for i in range(len(x_smooth)-1):
-            if smoothed_patient_prop[i] > 0:
-                colors = cmap(np.full(len(x_smooth), norm_scores))
-                ax.fill_between(x_smooth[i:i+2], y_pred[i:i+2], color=colors[i], alpha=0.8)
-
-        # Calculate y-axis limits for this subplot, taking error bars into account
+        # Calculate y-axis limits for the ridge plot, taking error bars into account
         y_min = min((y_vals - y_errs).min(), y_pred.min())  # Minimum of enrichment scores (with error bars) and GAM predictions
         y_max = max((y_vals + y_errs).max(), y_pred.max())  # Maximum of enrichment scores (with error bars) and GAM predictions
 
@@ -214,15 +205,14 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         y_min -= padding
         y_max += padding
 
-        # Set y-axis limits for this subplot
+        # Set y-axis limits for the ridge plot
         ax.set_ylim(y_min, y_max)
 
-        # Remove axis lines, ticks, and labels
+        # Remove axis lines, ticks, and labels for the ridge plot
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.spines["left"].set_visible(False)
         ax.spines["bottom"].set_visible(False)
-        
         ax.tick_params(axis="both", which="both", length=0)  # Remove ticks
 
         # Use shortened label if provided, else use full gene set name
@@ -231,11 +221,36 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         ax.set_xticklabels([])  # Remove x-axis labels
         ax.set_yticklabels([])  # Remove y-axis labels
 
+        # Create a heatmap track below the ridge plot
+        ax_heatmap = ax.inset_axes([0, -0.2, 1, 0.1])  # Place heatmap track below the ridge plot
+        X = np.linspace(x_vals.min(), x_vals.max(), len(x_vals) + 1)  # X edges
+        Y = np.array([0, 1])  # Y edges (single row heatmap)
+        Z = patient_proportion.values.reshape(1, -1)  # Reshape patient_proportion for heatmap
+
+        # Plot the heatmap
+        heatmap = ax_heatmap.pcolormesh(X, Y, Z, cmap='Blues', shading='flat', vmin=0, vmax=1)
+
+        # Remove axis lines, ticks, and labels for the heatmap track
+        ax_heatmap.spines["top"].set_visible(False)
+        ax_heatmap.spines["right"].set_visible(False)
+        ax_heatmap.spines["left"].set_visible(False)
+        ax_heatmap.spines["bottom"].set_visible(False)
+        ax_heatmap.tick_params(axis="both", which="both", length=0)  # Remove ticks
+        ax_heatmap.set_yticklabels([])  # Remove y-axis labels
+        ax_heatmap.set_xticklabels([])  # Remove x-axis labels
+
+    # Add a single colorbar for all heatmap tracks
+    #cbar = plt.colorbar(heatmap, ax=axes, orientation='horizontal', pad=0.2)
+    #cbar.set_label('Patient Proportion', fontsize=fontsize)
+
+    # Set x-axis label for the last subplot
     axes[-1].set_xlabel("Pseudotime", fontsize=fontsize)
 
-    if save_path is not None:
+    # Save the figure if save_path is provided
+    if save_path:
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         print(f"Figure saved to {save_path}")
+    
     plt.show()
 
 def read_gmt(gmt_file):
