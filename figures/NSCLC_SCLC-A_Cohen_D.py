@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, ttest_ind_from_stats
 from statsmodels.stats.multitest import multipletests
 from tqdm import tqdm
 from pygam import LinearGAM, s
@@ -17,44 +17,52 @@ def cohens_d(x, y):
     pooled_std = np.sqrt(((nx - 1) * np.std(x, ddof=1) ** 2 + (ny - 1) * np.std(y, ddof=1) ** 2) / dof)
     return (np.mean(x) - np.mean(y)) / pooled_std if pooled_std > 0 else 0
 
-def calculate_std_threshold(effect_sizes, multiplier=1):
+def compute_mad_threshold_per_patient(effect_sizes, scale_factor=1.4826, threshold_factor=1.5, percentile_cutoff=90):
     """
-    Calculate the effect size threshold using the mean and standard deviation of effect sizes.
-    
+    Compute a per-patient threshold using the Median Absolute Deviation (MAD) with stricter filtering.
+
     Parameters:
-        effect_sizes (list or np.array): List of effect sizes (Cohen's d).
-        multiplier (float): Multiplier for the standard deviation.
-    
+        effect_sizes (dict): Dictionary mapping patients to their effect sizes across time bins.
+        scale_factor (float): Constant to make MAD comparable to standard deviation (default: 1.4826).
+        threshold_factor (float): Multiplier for setting the threshold (increase for stricter cutoff).
+        percentile_cutoff (int): Percentile to use for additional filtering (default: 90).
+
     Returns:
-        float: The calculated effect size threshold.
+        dict: Dictionary mapping patients to their stricter MAD-based effect size thresholds.
     """
-    mean_effect = np.mean(effect_sizes)
-    std_effect = np.std(effect_sizes)
-    return mean_effect + multiplier * std_effect
+    patient_thresholds = {}
+
+    for patient, patient_effect_sizes in effect_sizes.items():
+        if len(patient_effect_sizes) == 0:  # Handle missing or empty data
+            patient_thresholds[patient] = 0  # Default threshold
+            continue
+
+        median_effect = np.median(patient_effect_sizes)
+        mad = scale_factor * np.median(np.abs(patient_effect_sizes - median_effect))
+        mad_threshold = median_effect + threshold_factor * mad
+
+        # Add percentile-based strictness
+        percentile_threshold = np.percentile(patient_effect_sizes, percentile_cutoff)
+        
+        # Use the stricter of MAD or percentile cutoff
+        patient_thresholds[patient] = max(mad_threshold, percentile_threshold)
+
+    return patient_thresholds
 
 def compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bins, p_value_threshold):
     """
     Compute enrichment scores for a gene set across pseudotime bins.
     
-    Parameters:
-        df (pd.DataFrame): The input dataframe.
-        gene_set (list): List of genes in the gene set.
-        pseudotime_col (str): Column name for pseudotime.
-        subject_col (str): Column name for subject identifiers.
-        num_bins (int): Number of pseudotime bins.
-        p_value_threshold (float): P-value threshold for significance.
-        effect_size_thresholds (list or None): List of effect size thresholds. If None, std-based threshold is used.
-    
-    Returns:
-        dict: Dictionary mapping effect size thresholds to enrichment results.
-        list: List of effect size thresholds used in the analysis.
+    Modifications:
+    - Uses dynamic effect size thresholding per patient.
+    - Applies a Gaussian-weighted rolling window to smooth patient recurrence scores.
     """
     df['pseudotime_bin'] = pd.cut(df[pseudotime_col], bins=num_bins, labels=False)
     results = {}
     
-    # Precompute effect sizes and p-values for all patients and bins
     effect_sizes = {}
     p_values = {}
+    patient_effect_sizes = {patient: [] for patient in df[subject_col].unique()}
     
     for b in range(num_bins):
         subset = df[df['pseudotime_bin'] == b]
@@ -71,16 +79,15 @@ def compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bin
             
             effect_size = cohens_d(gene_set_expr, background_expr)
             effect_sizes[b][patient] = effect_size
+            patient_effect_sizes[patient].append(effect_size)
             
             t_stat, p_value = stats.ttest_ind(gene_set_expr, background_expr)
             p_values[b][patient] = p_value
     
-    # Calculate std-based threshold if effect_size_thresholds is None
-
-    all_effect_sizes = [effect_sizes[b][patient] for b in range(num_bins) for patient in df[subject_col].unique()]
-    effect_size_threshold = calculate_std_threshold(all_effect_sizes)
+    # Compute dynamic thresholds
+    patient_thresholds = compute_mad_threshold_per_patient(patient_effect_sizes)
     
-    # Compute enrichment scores for each threshold
+    # Compute enrichment scores
     bin_centers, enrichment_scores, patient_proportions, standard_errors = [], [], [], []
     
     for b in range(num_bins):
@@ -98,21 +105,27 @@ def compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bin
         patient_p_values = [p_values[b][patient] for patient in patients]
         
         _, adjusted_p_values, _, _ = multipletests(patient_p_values, method='fdr_bh')
-        significant_patients = sum((abs(score) > effect_size_threshold) & (adj_p < p_value_threshold) 
-                                for score, adj_p in zip(patient_scores, adjusted_p_values))
+        significant_patients = sum((score > patient_thresholds.get(patient)) & (adj_p < p_value_threshold) 
+                                    for score, adj_p, patient in zip(patient_scores, adjusted_p_values, patients))
         
         bin_centers.append(df[df['pseudotime_bin'] == b][pseudotime_col].mean())
         enrichment_scores.append(np.mean(patient_scores))
         standard_errors.append(np.std(patient_scores) / np.sqrt(len(patient_scores)))
         patient_proportions.append(significant_patients / len(patients))
-        
-        enrichment_df = pd.DataFrame({
-            'pseudotime': bin_centers,
-            'enrichment': enrichment_scores,
-            'standard_error': standard_errors,
-            'patient_proportion': patient_proportions
-        }).dropna()
-        
+    
+    # Apply Gaussian-weighted rolling window smoothing
+    window_size = 5  # Increased window size for smoother results
+    gaussian_weights = np.exp(-0.5 * (np.linspace(-2, 2, window_size) ** 2))
+    gaussian_weights /= gaussian_weights.sum()
+    smoothed_proportions = np.convolve(patient_proportions, gaussian_weights, mode='same')
+    
+    enrichment_df = pd.DataFrame({
+        'pseudotime': bin_centers,
+        'enrichment': enrichment_scores,
+        'standard_error': standard_errors,
+        'patient_proportion': smoothed_proportions  # More smoothed recurrence score
+    }).dropna()
+    
     return enrichment_df
 
 def plot_enrichment_results(df, gene_set_name):
@@ -151,7 +164,7 @@ def plot_enrichment_results(df, gene_set_name):
     plt.show()
 
 def compute_gene_set_enrichment(df, gene_set, gene_set_name, pseudotime_col='aligned_score', subject_col='subject',
-                                            num_bins=10, p_value_threshold=0.05):
+                                            num_bins=20, p_value_threshold=0.05):
     gene_set = [gene for gene in gene_set if gene in df.columns]
     results = compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bins, p_value_threshold)
     plot_enrichment_results(results, gene_set_name)
@@ -228,7 +241,7 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         Z = patient_proportion.values.reshape(1, -1)  # Reshape patient_proportion for heatmap
 
         # Plot the heatmap
-        heatmap = ax_heatmap.pcolormesh(X, Y, Z, cmap='Blues', shading='flat', vmin=0, vmax=1)
+        heatmap = ax_heatmap.pcolormesh(X, Y, Z, cmap='Blues', shading='flat')#, vmin=0, vmax=1)
 
         # Remove axis lines, ticks, and labels for the heatmap track
         ax_heatmap.spines["top"].set_visible(False)
@@ -294,7 +307,7 @@ cellmarker_results = {}
 for gene_set in gene_sets_of_interest:
     genes = cellmarker_gene_set[gene_set]
     enrichment = compute_gene_set_enrichment(df.loc[:,df_columns_selected], genes, gene_set, 
-                                                           num_bins=15, p_value_threshold=0.05)
+                                                           num_bins=10, p_value_threshold=0.05)
     cellmarker_results[gene_set] = enrichment
 plot_cohens_d_ridge(cellmarker_results, short_labels=cellmarker_short_labels, figsize=(5, 4), save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/cell_marker_ridge.png")
 
@@ -308,6 +321,6 @@ pathway_results = {}
 for gene_set in gene_sets_of_interest:
     genes = pathway_gene_set[gene_set]
     enrichment = compute_gene_set_enrichment(df.loc[:,df_columns_selected], genes, gene_set, 
-                                                           num_bins=15, p_value_threshold=0.05)
+                                                           num_bins=10, p_value_threshold=0.05)
     pathway_results[gene_set] = enrichment
 plot_cohens_d_ridge(pathway_results, short_labels=pathway_short_labels, figsize=(5, 4), save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/pathway_ridge.png")
