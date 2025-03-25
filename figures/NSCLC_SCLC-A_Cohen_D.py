@@ -8,8 +8,8 @@ from scipy.stats import gaussian_kde, ttest_ind_from_stats
 from statsmodels.stats.multitest import multipletests
 from tqdm import tqdm
 from pygam import LinearGAM, s
-from scDeBussy.pp import stratified_downsample
-from scDeBussy import aligner
+from scdebussy.pp import stratified_downsample
+from scdebussy.tl import aligner
 
 def cohens_d(x, y):
     nx, ny = len(x), len(y)
@@ -139,7 +139,7 @@ def plot_enrichment_results(df, gene_set_name):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(5, 6), sharex=True)
     
     # GAM fitting on averaged enrichment scores
-    gam_enrichment = LinearGAM(s(0, n_splines=15)).fit(df[['pseudotime']], df['enrichment'])
+    gam_enrichment = LinearGAM(s(0, n_splines=10)).fit(df[['pseudotime']], df['enrichment'])
     x_vals = np.linspace(df['pseudotime'].min(), df['pseudotime'].max(), 100)
     y_pred = gam_enrichment.predict(x_vals)
     
@@ -184,6 +184,7 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         save_path (str, optional): Path to save the figure. If None, the figure is not saved.
     """
     num_gene_sets = len(results)
+    global_vmax = max(df['patient_proportion'].max() for df in results.values())
     fig, axes = plt.subplots(num_gene_sets, 1, figsize=figsize, sharex=True, constrained_layout=True, 
                              gridspec_kw={'height_ratios': [4] * num_gene_sets})
 
@@ -220,28 +221,29 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
 
         # Set y-axis limits for the ridge plot
         ax.set_ylim(y_min, y_max)
+        ax.set_yticks([max([0, round(y_min, 1)]), round(y_max, 1)])
 
         # Remove axis lines, ticks, and labels for the ridge plot
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_visible(False)
+        #ax.spines["left"].set_visible(False)
         ax.spines["bottom"].set_visible(False)
-        ax.tick_params(axis="both", which="both", length=0)  # Remove ticks
+        ax.tick_params(axis="both", which="both", length=0)
 
         # Use shortened label if provided, else use full gene set name
         y_label = short_labels.get(gene_set, gene_set) if short_labels else gene_set
         ax.set_ylabel(y_label, fontsize=fontsize, rotation=0, labelpad=50)
         ax.set_xticklabels([])  # Remove x-axis labels
-        ax.set_yticklabels([])  # Remove y-axis labels
+        #ax.set_yticklabels([])  # Remove y-axis labels
 
         # Create a heatmap track below the ridge plot
-        ax_heatmap = ax.inset_axes([0, -0.2, 1, 0.1])  # Place heatmap track below the ridge plot
+        ax_heatmap = ax.inset_axes([0, -0.15, 1, 0.1])  # Place heatmap track below the ridge plot
         X = np.linspace(x_vals.min(), x_vals.max(), len(x_vals) + 1)  # X edges
         Y = np.array([0, 1])  # Y edges (single row heatmap)
         Z = patient_proportion.values.reshape(1, -1)  # Reshape patient_proportion for heatmap
 
         # Plot the heatmap
-        heatmap = ax_heatmap.pcolormesh(X, Y, Z, cmap='Blues', shading='flat')#, vmin=0, vmax=1)
+        heatmap = ax_heatmap.pcolormesh(X, Y, Z, cmap='Blues', shading='flat', vmin=0, vmax=global_vmax)
 
         # Remove axis lines, ticks, and labels for the heatmap track
         ax_heatmap.spines["top"].set_visible(False)
@@ -252,12 +254,13 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
         ax_heatmap.set_yticklabels([])  # Remove y-axis labels
         ax_heatmap.set_xticklabels([])  # Remove x-axis labels
 
-    # Add a single colorbar for all heatmap tracks
-    #cbar = plt.colorbar(heatmap, ax=axes, orientation='horizontal', pad=0.2)
-    #cbar.set_label('Patient Proportion', fontsize=fontsize)
-
     # Set x-axis label for the last subplot
     axes[-1].set_xlabel("Pseudotime", fontsize=fontsize)
+
+    # Add a single colorbar for all heatmap tracks
+    plt.subplots_adjust(bottom=0.15)  # Adjust bottom margin to make room for colorbar
+    cbar = plt.colorbar(heatmap, ax=axes, orientation='horizontal', pad=0.01)
+    cbar.set_label('Patient Proportion', fontsize=fontsize)
 
     # Save the figure if save_path is provided
     if save_path:
@@ -309,7 +312,7 @@ for gene_set in gene_sets_of_interest:
     enrichment = compute_gene_set_enrichment(df.loc[:,df_columns_selected], genes, gene_set, 
                                                            num_bins=10, p_value_threshold=0.05)
     cellmarker_results[gene_set] = enrichment
-plot_cohens_d_ridge(cellmarker_results, short_labels=cellmarker_short_labels, figsize=(5, 4), save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/cell_marker_ridge.png")
+plot_cohens_d_ridge(cellmarker_results, short_labels=cellmarker_short_labels, figsize=(3, 5), fontsize=10, save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/cell_marker_ridge.png")
 
 # get the pathway gene set genes
 with open("/data1/chanj3/morrill1/projects/HTA/data/biological_reference/spectra_gene_sets/Spectra.NE_NonNE.gene_sets.p", "rb") as infile:
@@ -323,4 +326,4 @@ for gene_set in gene_sets_of_interest:
     enrichment = compute_gene_set_enrichment(df.loc[:,df_columns_selected], genes, gene_set, 
                                                            num_bins=10, p_value_threshold=0.05)
     pathway_results[gene_set] = enrichment
-plot_cohens_d_ridge(pathway_results, short_labels=pathway_short_labels, figsize=(5, 4), save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/pathway_ridge.png")
+plot_cohens_d_ridge(pathway_results, short_labels=pathway_short_labels, figsize=(3, 5), fontsize=10, save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/pathway_ridge.png")
