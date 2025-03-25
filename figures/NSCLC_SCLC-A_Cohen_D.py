@@ -58,7 +58,6 @@ def compute_enrichment_scores(df, gene_set, pseudotime_col, subject_col, num_bin
     - Applies a Gaussian-weighted rolling window to smooth patient recurrence scores.
     """
     df['pseudotime_bin'] = pd.cut(df[pseudotime_col], bins=num_bins, labels=False)
-    results = {}
     
     effect_sizes = {}
     p_values = {}
@@ -171,98 +170,73 @@ def compute_gene_set_enrichment(df, gene_set, gene_set_name, pseudotime_col='ali
     return results
 
 def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None, color="royalblue", save_path=None):
-    """
-    Plots Cohen's D with error bars and GAM fit for multiple gene sets as a stacked ridge plot,
-    with a heatmap track below each ridge plot representing the patient_proportion values.
-
-    Parameters:
-        results (dict): Dictionary mapping gene set names to their enrichment results.
-        figsize (tuple): Size of the figure.
-        fontsize (int): Font size for labels.
-        short_labels (dict, optional): Dictionary mapping full gene set names to shortened labels.
-        color (str, optional): Color for all plots (default: "royalblue").
-        save_path (str, optional): Path to save the figure. If None, the figure is not saved.
-    """
     num_gene_sets = len(results)
     global_vmax = max(df['patient_proportion'].max() for df in results.values())
+
     fig, axes = plt.subplots(num_gene_sets, 1, figsize=figsize, sharex=True, constrained_layout=True, 
                              gridspec_kw={'height_ratios': [4] * num_gene_sets})
 
-    if num_gene_sets == 1:  # Ensure axes is always iterable
-        axes = [axes]
+    if num_gene_sets == 1:
+        axes = [axes]  
 
-    # Plot ridge plots and heatmap tracks for each gene set
     for ax, (gene_set, df) in zip(axes, results.items()):
         x_vals = df['pseudotime']
         y_vals = df['enrichment']
         y_errs = df['standard_error']
         patient_proportion = df['patient_proportion']
 
-        # Plot Cohen's D with subtle error bars on the ridge plot
-        ax.errorbar(
-            x_vals, y_vals, yerr=y_errs, fmt='o', color=color, alpha=0.5, 
-            elinewidth=0.8, capsize=2, capthick=0.8
-        )
-
-        # GAM fit for the enrichment scores
         gam = LinearGAM(s(0, n_splines=10)).fit(x_vals, y_vals)
         x_smooth = np.linspace(x_vals.min(), x_vals.max(), 100)
         y_pred = gam.predict(x_smooth)
+        # Fit separate GAMs for error bands
+        gam_low = LinearGAM(s(0, n_splines=10)).fit(x_vals, y_vals - y_errs)
+        gam_high = LinearGAM(s(0, n_splines=10)).fit(x_vals, y_vals + y_errs)
+
+        # Predict smooth confidence interval bounds
+        y_err_low = gam_low.predict(x_smooth)
+        y_err_high = gam_high.predict(x_smooth)
+        
+        ax.fill_between(
+            x_smooth, y_err_low, y_err_high, color=color, alpha=0.3  # Shaded error band
+        )
         ax.plot(x_smooth, y_pred, color=color, lw=2)
 
-        # Calculate y-axis limits for the ridge plot, taking error bars into account
-        y_min = min((y_vals - y_errs).min(), y_pred.min())  # Minimum of enrichment scores (with error bars) and GAM predictions
-        y_max = max((y_vals + y_errs).max(), y_pred.max())  # Maximum of enrichment scores (with error bars) and GAM predictions
+        y_min = min((y_vals - y_errs).min(), y_pred.min())
+        y_max = max((y_vals + y_errs).max(), y_pred.max())
+        padding = (y_max - y_min) * 0.1
+        ax.set_ylim(y_min - padding, y_max + padding)
 
-        # Add some padding to the y-axis limits
-        padding = (y_max - y_min) * 0.1  # 10% padding
-        y_min -= padding
-        y_max += padding
-
-        # Set y-axis limits for the ridge plot
-        ax.set_ylim(y_min, y_max)
-        ax.set_yticks([max([0, round(y_min, 1)]), round(y_max, 1)])
-
-        # Remove axis lines, ticks, and labels for the ridge plot
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        #ax.spines["left"].set_visible(False)
-        ax.spines["bottom"].set_visible(False)
+        #ax.spines["bottom"].set_visible(False)
         ax.tick_params(axis="both", which="both", length=0)
 
-        # Use shortened label if provided, else use full gene set name
         y_label = short_labels.get(gene_set, gene_set) if short_labels else gene_set
         ax.set_ylabel(y_label, fontsize=fontsize, rotation=0, labelpad=50)
-        ax.set_xticklabels([])  # Remove x-axis labels
-        #ax.set_yticklabels([])  # Remove y-axis labels
 
-        # Create a heatmap track below the ridge plot
-        ax_heatmap = ax.inset_axes([0, -0.15, 1, 0.1])  # Place heatmap track below the ridge plot
-        X = np.linspace(x_vals.min(), x_vals.max(), len(x_vals) + 1)  # X edges
-        Y = np.array([0, 1])  # Y edges (single row heatmap)
-        Z = patient_proportion.values.reshape(1, -1)  # Reshape patient_proportion for heatmap
+        ax_heatmap = ax.inset_axes([0, -0.15, 1, 0.1])  
+        X = np.linspace(x_vals.min(), x_vals.max(), len(x_vals) + 1)
+        Y = np.array([0, 1])
+        Z = patient_proportion.values.reshape(1, -1)
 
-        # Plot the heatmap
         heatmap = ax_heatmap.pcolormesh(X, Y, Z, cmap='Blues', shading='flat', vmin=0, vmax=global_vmax)
 
-        # Remove axis lines, ticks, and labels for the heatmap track
         ax_heatmap.spines["top"].set_visible(False)
         ax_heatmap.spines["right"].set_visible(False)
         ax_heatmap.spines["left"].set_visible(False)
         ax_heatmap.spines["bottom"].set_visible(False)
-        ax_heatmap.tick_params(axis="both", which="both", length=0)  # Remove ticks
-        ax_heatmap.set_yticklabels([])  # Remove y-axis labels
-        ax_heatmap.set_xticklabels([])  # Remove x-axis labels
+        ax_heatmap.tick_params(axis="both", which="both", length=0)
+        ax_heatmap.set_yticklabels([])
+        ax_heatmap.set_xticklabels([])
 
-    # Set x-axis label for the last subplot
-    axes[-1].set_xlabel("Pseudotime", fontsize=fontsize)
+    axes[-1].set_xlabel("Pseudotime", fontsize=fontsize)  
+    axes[-1].tick_params(axis='x', pad=10)
 
-    # Add a single colorbar for all heatmap tracks
-    plt.subplots_adjust(bottom=0.15)  # Adjust bottom margin to make room for colorbar
-    cbar = plt.colorbar(heatmap, ax=axes, orientation='horizontal', pad=0.01)
+    plt.subplots_adjust(bottom=0.2)  # More space for x-axis labels
+
+    cbar = fig.colorbar(heatmap, ax=axes.ravel().tolist(), orientation='horizontal', fraction=0.05, pad=0.08, aspect=40)
     cbar.set_label('Patient Proportion', fontsize=fontsize)
 
-    # Save the figure if save_path is provided
     if save_path:
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         print(f"Figure saved to {save_path}")

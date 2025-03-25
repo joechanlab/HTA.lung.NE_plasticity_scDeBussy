@@ -2,8 +2,8 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import scDeBussy
-from scDeBussy.pl import *
+from scdebussy.tl import process_gene_data, perform_sliding_window_enrichr_analysis, analyze_and_plot_enrichment, enrichr
+from scdebussy.pl import fit_kde, plot_kde_density_ridge, plot_kde_heatmap, plot_kshape_clustering, plot_summary_curve
 import gseapy as gp
 import seaborn as sns
 from matplotlib.colors import LogNorm
@@ -103,13 +103,26 @@ plot_summary_curve(summary_df, gene_curves, scores_df,
                    fig_size=(2.5, 1.5), pt_alpha=0.05)
 
 
-sorted_gene_curve, row_colors, col_colors, categories = scDeBussy.process_gene_data(scores_df, gene_curves, colors, [0.5],
-                                                                                       n_clusters = 5, n_init=1, MI_threshold=1.2,
-                                                                                       GCV_threshold=0.04, AIC_threshold=2e6, hierarchical=True,  
-                                                                                       label_names=['Early', 'Early', "Middle", 'Middle', 'Late'], weight=weight)
+sorted_gene_curve, row_colors, col_colors, categories = process_gene_data(scores_df, gene_curves, colors, [0.5],
+                                                                            n_clusters = 5, n_init=1, MI_threshold=1.2,
+                                                                            GCV_threshold=0.04, AIC_threshold=2e6, hierarchical=True,  
+                                                                            label_names=['Early', 'Early', "Middle", 'Middle', 'Late'], weight=weight)
 print(sorted_gene_curve.shape)
 plot_kshape_clustering(sorted_gene_curve, categories, ['Early', 'Middle', 'Late'], alpha=0.03)
 
+# sliding window plot (cell type)
+ordered_genes = sorted_gene_curve.index.tolist()
+window_size = 150
+stride = 50
+gene_set_library = "CellMarker_2024"
+immune_related_gene_sets = ['Immune Cell', 'T Cell', "T Helper", 'Regulatory T', 'B Cell', 'NK Cell', 'Dendritic Cell', 'Macrophage', 'Neutrophil', 'Eosinophil', 'Basophil', 'Monocyte', 'Mast Cell', 'Myeloid', 'Lymphoid', 'Phagocyte', 'Antigen', 'Plasma']
+results = perform_sliding_window_enrichr_analysis(ordered_genes, window_size, stride, gene_set_library)
+analyze_and_plot_enrichment(results, exclude_gene_sets=immune_related_gene_sets, save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/cell_type_enriched_pathway.png")
+
+gene_set_library = "/data1/chanj3/HTA.lung.NE_plasticity.120122/ref/curated.small.100124.gmt"
+or_threshold=10
+results = perform_sliding_window_enrichr_analysis(ordered_genes, window_size, stride, gene_set_library)
+analyze_and_plot_enrichment(results, or_threshold=or_threshold, exclude_gene_sets=immune_related_gene_sets, save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/pathway_enriched_pathway.png")
 
 # Cell type gene set annotation
 gene_info = pd.DataFrame({'gene': sorted_gene_curve.index, 'category': categories})
@@ -118,7 +131,7 @@ results = pd.DataFrame()
 
 for category in gene_info.category.unique():
     gene_list = gene_info.gene[gene_info.category == category]
-    results_category = scDeBussy.enrichr(gene_list, gene_sets)
+    results_category = enrichr(gene_list, gene_sets)
     results_category.loc[:,'category'] = category
     results = pd.concat([results, results_category])
     
