@@ -237,6 +237,25 @@ def plot_cohens_d_ridge(results, figsize=(8, 6), fontsize=12, short_labels=None,
     cbar = fig.colorbar(heatmap, ax=axes.ravel().tolist(), orientation='horizontal', fraction=0.05, pad=0.08, aspect=40)
     cbar.set_label('Patient Proportion', fontsize=fontsize)
 
+    # ---- Custom Colorbar on Top of the First Subplot ---- #
+    # Set a color map for the pseudotime < 0.5 (tab:red) and > 0.5 (tab:gold)
+    from matplotlib.colors import ListedColormap
+    cmap = ListedColormap(["red", "gold"])
+
+    # Insert the custom color gradient for pseudotime within the first subplot
+    ax_colorbar = axes[0].inset_axes([0, 1.1, 1, 0.05])  # Location of the colorbar (inside first subplot)
+    ax_colorbar.imshow([np.linspace(0, 1, 256)], aspect="auto", cmap=cmap, extent=[0, 1, 0, 1])
+    ax_colorbar.set_xticks([])
+    ax_colorbar.set_xticklabels([])  # Remove x-axis ticks
+    ax_colorbar.set_yticks([])  # Remove y-axis ticks
+    ax_colorbar.set_xticklabels([])  # Remove x-axis ticks
+    ax_colorbar.spines["top"].set_visible(False)
+    ax_colorbar.spines["right"].set_visible(False)
+    ax_colorbar.spines["left"].set_visible(False)
+    ax_colorbar.spines["bottom"].set_visible(False)
+    ax_colorbar.text(0.25, 1.05, "NSCLC", ha="center", va="bottom", fontsize=fontsize)
+    ax_colorbar.text(0.75, 1.05, "SCLC-A", ha="center", va="bottom", fontsize=fontsize)
+
     if save_path:
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         print(f"Figure saved to {save_path}")
