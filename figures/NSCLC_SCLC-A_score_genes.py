@@ -244,18 +244,18 @@ def plot_smoothed_mean_median_with_recurrence_heatmap(real_scores, proportion_en
         ax.fill_between(bins, smoothed_lower_bound, smoothed_upper_bound, color=color, alpha=0.3, label='Smoothed Standard Error')
 
         # Set y-axis limits with padding
-        y_min = smoothed_lower_bound.min()
-        y_max = smoothed_upper_bound.max()
+        y_min = round(smoothed_lower_bound.min(), 1)
+        y_max = round(smoothed_upper_bound.max(), 1)
         padding = (y_max - y_min) * 0.1
         ax.set_ylim(y_min - padding, y_max + padding)
 
         # Style adjustments for the subplot
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.tick_params(axis="both", which="both", length=0)
+        ax.tick_params(axis="both", which="both", length=0, labelsize=fontsize - 5)
 
         y_label = short_labels.get(gene_set, gene_set) if short_labels else gene_set
-        ax.set_ylabel(y_label, fontsize=fontsize, rotation=0, labelpad=50)
+        ax.set_ylabel(y_label, fontsize=fontsize, rotation=0, labelpad=10, ha='right', va='bottom')
 
         # Add heatmap for recurrence scores below each plot
         ax_heatmap = ax.inset_axes([0, -0.15, 1, 0.1])  # Adjust position as needed
@@ -280,14 +280,13 @@ def plot_smoothed_mean_median_with_recurrence_heatmap(real_scores, proportion_en
 
     # Add a colorbar for heatmaps
     cbar = fig.colorbar(heatmap, ax=axes.ravel().tolist(), orientation='horizontal', fraction=0.05, pad=0.08, aspect=40)
-    cbar.set_label('Recurrence Score (Proportion Enriched)', fontsize=fontsize)
+    cbar.set_label('Recurrence Score', fontsize=fontsize)
+    cbar.ax.tick_params(labelsize=fontsize - 5)
 
     if save_path:
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
     
     plt.show()
-
-
 
 adata = sc.read_h5ad("/scratch/chanj3/wangm10/NSCLC_SCLC-A.h5ad")  # Load your single-cell dataset
 
@@ -317,7 +316,7 @@ cellmarker_proportion_enriched = compute_patient_proportion(cellmarker_p_values,
 plot_enrichment_and_proportion(cellmarker_real_scores, cellmarker_proportion_enriched)
 
 plot_smoothed_mean_median_with_recurrence_heatmap(cellmarker_real_scores, cellmarker_proportion_enriched, 
-                                                  figsize=(7, 7), fontsize=15, short_labels=None, color="royalblue", 
+                                                  figsize=(7, 8), fontsize=23, short_labels=None, color="royalblue", 
                                                   save_path="NSCLC_SCLC-A_score_genes_cellmarker.png")
 
 #------------------------#
@@ -346,5 +345,32 @@ pathway_proportion_enriched = compute_patient_proportion(pathway_p_values, adata
 plot_enrichment_and_proportion(pathway_real_scores, pathway_proportion_enriched)
 
 plot_smoothed_mean_median_with_recurrence_heatmap(pathway_real_scores, pathway_proportion_enriched, 
-                                                  figsize=(7, 7), fontsize=15, short_labels=None, color="royalblue", 
+                                                  figsize=(6, 8), fontsize=23, short_labels=None, color="royalblue", 
                                                   save_path="NSCLC_SCLC-A_score_genes_pathway.png")
+
+#------------------------#
+# Custom Gene Sets #
+#------------------------#
+custom_gene_set = {'ASCL1':["ASCL1"],
+                   'NEUROD1':["NEUROD1"]}
+data = compute_gene_scores(adata, custom_gene_set)
+adata = normalize_scores(adata, custom_gene_set, subject_label='subject')
+adata = bin_pseudotime(adata, num_bins=15, pseudotime='aligned_score')
+
+# Compute real enrichment
+custom_real_scores = compute_median_scores(adata, custom_gene_set)
+
+# Generate null distributions via permutation
+custom_null_distributions = permutation_test(adata, custom_gene_set, num_permutations=100)
+
+# Compute statistical significance
+custom_p_values = compute_significance(custom_real_scores, custom_null_distributions, alpha=0.05)
+
+custom_proportion_enriched = compute_patient_proportion(custom_p_values, adata)
+
+# Call the function to visualize the results
+plot_enrichment_and_proportion(custom_real_scores, custom_proportion_enriched)
+
+plot_smoothed_mean_median_with_recurrence_heatmap(custom_real_scores, custom_proportion_enriched, 
+                                                  figsize=(6, 5), fontsize=23, short_labels=None, color="royalblue", 
+                                                  save_path="NSCLC_SCLC-A_score_genes_ASCL1_NEUROD1.png")
