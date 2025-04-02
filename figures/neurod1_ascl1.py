@@ -3,16 +3,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pygam import LinearGAM, s, f
-from scDeBussy import aligner, gam_smooth_expression
-from scDeBussy.pp import create_cellrank_probability_df
-from scDeBussy.pl import plot_sigmoid_fits, plot_summary_curve
+from scdebussy.tl import aligner, gam_smooth_expression
+from scdebussy.pp import create_cellrank_probability_df
+from scdebussy.pl import plot_sigmoid_fits, plot_summary_curve
 import numpy as np
 from matplotlib.patches import Patch
 import re
 
 path = "/data1/chanj3/HTA.lung.NE_plasticity.120122/fresh.SCLC_NSCLC.062124/individual.090124/"
-lam = 2
-n_splines = 4
+
 n_cols = 4
 downsample = 5000
 cellrank_obsms = 'palantir_pseudotime_slalom'
@@ -53,33 +52,55 @@ combined_adata, df = create_cellrank_probability_df(h5ad_files, 'cell_type_final
                                                     cellrank_obsms, 
                                                     cellrank_cols_dict=result_dict, downsample=downsample, need_all_clusters=False)
 df['score'] = df.groupby('subject')['score'].transform(lambda x: (x - x.min()) / (x.max() - x.min()))
-df_ascl1_neurod1, _, _ = gam_smooth_expression(df, ['ASCL1', 'NEUROD1'], score_col='score', n_splines=n_splines, lam=lam)
+lam = 3
+n_splines = 5
+df_samples = []
+for gene in ['ASCL1', 'NEUROD1']:
+    for subject in df.subject.unique():
+        df_sample = df[df['subject'] == subject][['score', gene]]
+        df_sample.columns = ['score', 'expression']
+        df_sample['expression'] = df_sample['expression'].transform(
+            lambda x: (x - x.min()) / (x.max() - x.min()) if x.max() != x.min() else pd.Series(0, index=x.index)
+        )
+        gam = LinearGAM(s(0, n_splines=n_splines, lam=lam)).fit(df_sample.score, df_sample.expression)
+        df_sample['smoothed'] = gam.predict(df_sample.score)
+        df_sample['gene'] = gene
+        df_sample['subject'] = subject
+        df_samples.append(df_sample)
+df_ascl1_neurod1 = pd.concat(df_samples)
+df_ascl1_neurod1.reset_index(drop=True, inplace=True)
 
+to_plot='smoothed'
 fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 3 * n_rows), squeeze=False)
 axes = axes.flatten()  # Flatten axes array for easier indexing
-
 for i, sample in enumerate(samples):
     ax = axes[i]
     print(sample)
     df_sample = df[df['subject'] == sample]
     df_smoothed = df_ascl1_neurod1[df_ascl1_neurod1['subject'] == sample]
+    #df_smoothed = df_smoothed[df_ascl1_neurod1['gene'] == 'ASCL1']
 
-    if sample == 'RU1303':
-        df_smoothed = df_smoothed[~np.isin(df_smoothed['gene'], ['NEUROD1'])]
-    elif re.search('RU1518|RU1646', sample):
-        df_smoothed = df_smoothed[~np.isin(df_smoothed['gene'], ['ASCL1'])]
+    # if sample == 'RU1303':
+    #     df_smoothed = df_smoothed[~np.isin(df_smoothed['gene'], ['NEUROD1'])]
+    # elif re.search('RU1518|RU1646', sample):
+    #     df_smoothed = df_smoothed[~np.isin(df_smoothed['gene'], ['ASCL1'])]
     if i == 0:
-        sns.lineplot(x='score', y='smoothed', hue='gene', data=df_smoothed, 
-                    ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"})
+        # sns.scatterplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
+        #             ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, alpha=0.5)
+        sns.lineplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
+                    ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, alpha=0.5)
+                                
         handles, labels = ax.get_legend_handles_labels()  # Retrieve legend info
         ax.legend_.remove()
     else: 
-        sns.lineplot(x='score', y='smoothed', hue='gene', data=df_smoothed, 
-                    ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, legend=False)
+        # sns.scatterplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
+        #             ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, legend=False, alpha=0.5)
+        sns.lineplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
+                    ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, legend=False, alpha=0.5)
         
     # Add title and labels to the subplot
-    expression_max = np.nanmax(df_smoothed.smoothed)
-    expression_min = np.nanmin(df_smoothed.smoothed)
+    expression_max = np.nanmax(df_ascl1_neurod1[to_plot])
+    expression_min = np.nanmin(df_ascl1_neurod1[to_plot])
     bar_space = (expression_max - expression_min) * 0.1
     y_max = expression_max + 0.1
     y_min = expression_min - bar_space * 2
@@ -120,5 +141,73 @@ fig.legend(handles_gene + handles_bar, labels_gene + list(color_map.keys()), loc
 
 # Adjust layout and show the plot
 plt.tight_layout()
-plt.savefig(f'figures/neurod1_ascl1_lam_{lam}_splines_{n_splines}.png', dpi=300, bbox_inches='tight')
+plt.savefig(f'neurod1_ascl1_lam_{lam}_splines_{n_splines}.png', dpi=300, bbox_inches='tight')
 plt.show()
+
+def classify_trend(smoothed_values, pseudotime, poly_order=3, noise_threshold=1e-2, flat_range_threshold=0.1, peak_drop_threshold=0.05):
+    """
+    Classifies the trend of gene expression along pseudotime into:
+    - "increasing": Majority of trend is increasing.
+    - "flat": Little to no significant change.
+    - "peak": Has a clear peak and then declines.
+
+    Parameters:
+    - smoothed_values (array-like): Smoothed expression values.
+    - pseudotime (array-like): Corresponding pseudotime values.
+    - poly_order (int): Order of the polynomial for fitting.
+    - noise_threshold (float): Threshold for ignoring small variations.
+    - flat_range_threshold (float): Maximum slope range to classify as "flat".
+    - peak_drop_threshold (float): Minimum drop after peak for classification as "peak".
+
+    Returns:
+    - str: Trend type ("increasing", "flat", or "peak").
+    """
+
+    # Fit a polynomial to the smoothed values
+    coeffs = np.polyfit(pseudotime, smoothed_values, poly_order)
+    poly_values = np.polyval(coeffs, pseudotime)
+    poly_derivative = np.polyder(coeffs)  # First derivative
+    derivative_values = np.polyval(poly_derivative, pseudotime)
+
+    # Check for flat trend
+    if np.max(derivative_values) - np.min(derivative_values) < flat_range_threshold:
+        return "flat"
+
+    # Identify peaks: Where derivative changes from positive to negative
+    peak_index = np.argmax(poly_values)
+    if peak_index > 0 and peak_index < len(pseudotime) - 1:
+        peak_value = poly_values[peak_index]
+        end_value = poly_values[-1]
+        if (peak_value - end_value) > peak_drop_threshold:
+            return "peak"
+
+    # Adjust "increasing" threshold to be stricter
+    increasing_fraction = np.mean(derivative_values > noise_threshold)
+    if increasing_fraction > 0.75:  # Was 0.6 before, now stricter
+        return "increasing"
+
+    return "peak"  # Default to peak if not classified as increasing or flat
+
+# Compute recurrence scores
+recurrence_scores_improved = []
+trend_types = ["increasing", "flat", "peak"]
+
+for gene in df_ascl1_neurod1['gene'].unique():
+    gene_data = df_ascl1_neurod1[df_ascl1_neurod1['gene'] == gene]
+    trend_counts = {t: 0 for t in trend_types}
+
+    for subject in gene_data['subject'].unique():
+        subject_data = gene_data[gene_data['subject'] == subject]
+        trend_type = classify_trend(subject_data['smoothed'].values, subject_data['score'].values)
+        trend_counts[trend_type] += 1
+        print(f"Gene: {gene}, Subject: {subject}, Trend: {trend_type}")
+
+    total_subjects = len(gene_data['subject'].unique())
+    recurrence_scores_improved.append({
+        "gene": gene,
+        **{t: trend_counts[t] / total_subjects for t in trend_types}
+    })
+
+# Create a DataFrame with improved recurrence scores
+recurrence_df_improved = pd.DataFrame(recurrence_scores_improved)
+print(recurrence_df_improved)
