@@ -78,23 +78,14 @@ for i, sample in enumerate(samples):
     print(sample)
     df_sample = df[df['subject'] == sample]
     df_smoothed = df_ascl1_neurod1[df_ascl1_neurod1['subject'] == sample]
-    #df_smoothed = df_smoothed[df_ascl1_neurod1['gene'] == 'ASCL1']
-
-    # if sample == 'RU1303':
-    #     df_smoothed = df_smoothed[~np.isin(df_smoothed['gene'], ['NEUROD1'])]
-    # elif re.search('RU1518|RU1646', sample):
-    #     df_smoothed = df_smoothed[~np.isin(df_smoothed['gene'], ['ASCL1'])]
+    
     if i == 0:
-        # sns.scatterplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
-        #             ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, alpha=0.5)
         sns.lineplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
                     ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, alpha=0.5)
                                 
-        handles, labels = ax.get_legend_handles_labels()  # Retrieve legend info
+        handles, labels = ax.get_legend_handles_labels()
         ax.legend_.remove()
     else: 
-        # sns.scatterplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
-        #             ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, legend=False, alpha=0.5)
         sns.lineplot(x='score', y=to_plot, hue='gene', data=df_smoothed, 
                     ax=ax, palette={"ASCL1": "tab:red", "NEUROD1": "tab:cyan"}, legend=False, alpha=0.5)
         
@@ -144,70 +135,161 @@ plt.tight_layout()
 plt.savefig(f'neurod1_ascl1_lam_{lam}_splines_{n_splines}.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-def classify_trend(smoothed_values, pseudotime, poly_order=3, noise_threshold=1e-2, flat_range_threshold=0.1, peak_drop_threshold=0.05):
-    """
-    Classifies the trend of gene expression along pseudotime into:
-    - "increasing": Majority of trend is increasing.
-    - "flat": Little to no significant change.
-    - "peak": Has a clear peak and then declines.
+#--------------
+# Compare individual trends with aggregate trend
+import numpy as np
+import pandas as pd
+from pygam import LinearGAM, s, f
+import matplotlib.pyplot as plt
 
-    Parameters:
-    - smoothed_values (array-like): Smoothed expression values.
-    - pseudotime (array-like): Corresponding pseudotime values.
-    - poly_order (int): Order of the polynomial for fitting.
-    - noise_threshold (float): Threshold for ignoring small variations.
-    - flat_range_threshold (float): Maximum slope range to classify as "flat".
-    - peak_drop_threshold (float): Minimum drop after peak for classification as "peak".
+def angular_similarity(x, y):
+    # Convert time series into vectors
+    x_diff = np.diff(x)
+    y_diff = np.diff(y)
+    
+    # Normalize vectors
+    x_norm = x_diff / np.linalg.norm(x_diff)
+    y_norm = y_diff / np.linalg.norm(y_diff)
+    
+    # Compute cosine similarity between vector directions
+    similarity = np.dot(x_norm, y_norm)
+    return similarity
 
-    Returns:
-    - str: Trend type ("increasing", "flat", or "peak").
-    """
 
-    # Fit a polynomial to the smoothed values
-    coeffs = np.polyfit(pseudotime, smoothed_values, poly_order)
-    poly_values = np.polyval(coeffs, pseudotime)
-    poly_derivative = np.polyder(coeffs)  # First derivative
-    derivative_values = np.polyval(poly_derivative, pseudotime)
+lam = 3
+n_splines = 6
 
-    # Check for flat trend
-    if np.max(derivative_values) - np.min(derivative_values) < flat_range_threshold:
-        return "flat"
+for gene in ['ASCL1', 'NEUROD1']:
+    print(gene)
+    
+    # Encode subject as categorical variable for aggregate GAM fitting
+    df['subject'] = df['subject'].astype('category').cat.codes
+    gam_aggregate = LinearGAM(s(0, n_splines=n_splines, lam=lam) + f(1)).fit(df[['score', 'subject']], df[gene])
+    
+    # Evaluate trends at evenly spaced pseudotime points
+    pseudotime_points = np.linspace(0, 1, 100)
+    patient_map = dict(zip(df.subject.unique(), samples))
+    
+    # Compute angular similarities for each subject
+    distances = {}
+    
+    # Plot individual trends for each sample in separate panels
+    n_cols = 4
+    n_samples = len(df.subject.unique())
+    n_rows = (n_samples + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4 * n_rows), sharex=True, sharey=True)
+    axes = axes.flatten()
+    
+    for i, subject in enumerate(df.subject.unique()):
+        ax = axes[i]
+        
+        # Fit individual GAM for the subject
+        gam_individual = LinearGAM(s(0, n_splines=n_splines, lam=lam)).fit(
+            df[df['subject'] == subject]['score'], 
+            df[df['subject'] == subject][gene]
+        )
+        individual_trend = gam_individual.predict(pseudotime_points)
+        
+        # Predict aggregate trend for the same subject
+        aggregate_trend = gam_aggregate.predict(np.column_stack((pseudotime_points, [subject] * len(pseudotime_points))))
+        
+        # Compute angular similarity
+        distance = angular_similarity(individual_trend, aggregate_trend)
+        distances[subject] = distance
+        
+        # Plot individual trend
+        ax.plot(pseudotime_points, individual_trend, label=f'{patient_map[subject]} (Individual)', color='blue', alpha=0.7)
+        
+        # Plot aggregate trend on the same panel
+        ax.plot(pseudotime_points, aggregate_trend, label='Aggregate Trend', color='red', linestyle='--', linewidth=2)
+        
+        # Annotate panel title with gene name and angular similarity
+        ax.set_title(f'{patient_map[subject]} ({gene})\nAngular Sim: {distance:.2f}', fontsize=10)
+    
+    # Hide unused subplots if there are fewer samples than rows * cols
+    for j in range(i + 1, len(axes)):
+        fig.delaxes(axes[j])
+    
+    fig.supxlabel('Pseudotime', fontsize=12)
+    fig.supylabel('Expression', fontsize=12)
+    fig.suptitle(f'Individual Trends with Aggregate Trend for {gene}', fontsize=16)
+    
+    # Add a legend to one of the subplots (e.g., the first one)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.05), ncol=2, frameon=False)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Save distances to a DataFrame and print it
+    distances_df = pd.DataFrame.from_dict(distances, orient='index', columns=['Angular Similarity'])
+    distances_df['Sample'] = distances_df.index.map(patient_map)
+    
+    print(distances_df)
 
-    # Identify peaks: Where derivative changes from positive to negative
-    peak_index = np.argmax(poly_values)
-    if peak_index > 0 and peak_index < len(pseudotime) - 1:
-        peak_value = poly_values[peak_index]
-        end_value = poly_values[-1]
-        if (peak_value - end_value) > peak_drop_threshold:
-            return "peak"
+#-------
+# Investigate how often ASCL1 comes before NERUOD1
+import numpy as np
+import pandas as pd
+from pygam import LinearGAM, s
 
-    # Adjust "increasing" threshold to be stricter
-    increasing_fraction = np.mean(derivative_values > noise_threshold)
-    if increasing_fraction > 0.75:  # Was 0.6 before, now stricter
-        return "increasing"
+# Function to compute the first derivative
+def compute_derivative(y, x):
+    return np.gradient(y, x)
 
-    return "peak"  # Default to peak if not classified as increasing or flat
+# Function to determine if ASCL1 increases before NEUROD1
+def analyze_increase_order(pseudotime, ascl1_trend, neurod1_trend):
+    # Compute derivatives (rate of change)
+    ascl1_derivative = compute_derivative(ascl1_trend, pseudotime)
+    neurod1_derivative = compute_derivative(neurod1_trend, pseudotime)
+    
+    # Identify points where the trends start increasing
+    ascl1_increasing = np.where(ascl1_derivative > 0)[0]
+    neurod1_increasing = np.where(neurod1_derivative > 0)[0]
+    
+    if len(ascl1_increasing) == 0 or len(neurod1_increasing) == 0:
+        return 0  # No increases detected
+    
+    # Compare the first increasing points
+    first_ascl1 = ascl1_increasing[0]
+    first_neurod1 = neurod1_increasing[0]
+    
+    return 1 if first_ascl1 < first_neurod1 else 0
 
-# Compute recurrence scores
-recurrence_scores_improved = []
-trend_types = ["increasing", "flat", "peak"]
+# Parameters for GAM fitting
+lam = 3
+n_splines = 6
 
-for gene in df_ascl1_neurod1['gene'].unique():
-    gene_data = df_ascl1_neurod1[df_ascl1_neurod1['gene'] == gene]
-    trend_counts = {t: 0 for t in trend_types}
+# Example dataset structure: df contains pseudotime and gene expression per patient
+# Columns: ['score', 'ASCL1', 'NEUROD1', 'subject']
+results = []
 
-    for subject in gene_data['subject'].unique():
-        subject_data = gene_data[gene_data['subject'] == subject]
-        trend_type = classify_trend(subject_data['smoothed'].values, subject_data['score'].values)
-        trend_counts[trend_type] += 1
-        print(f"Gene: {gene}, Subject: {subject}, Trend: {trend_type}")
+for patient in df['subject'].unique():
+    # Filter data for the current patient
+    df_patient = df[df['subject'] == patient]
+    
+    # Fit GAM models for ASCL1 and NEUROD1
+    gam_ascl1 = LinearGAM(s(0, n_splines=n_splines, lam=lam)).fit(df_patient['score'], df_patient['ASCL1'])
+    gam_neurod1 = LinearGAM(s(0, n_splines=n_splines, lam=lam)).fit(df_patient['score'], df_patient['NEUROD1'])
+    
+    # Predict smoothed trends over pseudotime
+    pseudotime_points = np.linspace(df_patient['score'].min(), df_patient['score'].max(), 100)
+    ascl1_trend = gam_ascl1.predict(pseudotime_points)
+    neurod1_trend = gam_neurod1.predict(pseudotime_points)
+    
+    # Analyze increase order
+    result = analyze_increase_order(pseudotime_points, ascl1_trend, neurod1_trend)
+    
+    # Store results
+    results.append({'Patient': patient, 'ASCL1_before_NEUROD1': result})
 
-    total_subjects = len(gene_data['subject'].unique())
-    recurrence_scores_improved.append({
-        "gene": gene,
-        **{t: trend_counts[t] / total_subjects for t in trend_types}
-    })
+# Convert results to DataFrame and summarize
+results_df = pd.DataFrame(results)
+summary = results_df.groupby('ASCL1_before_NEUROD1').size()
+print("Summary of Events:")
+print(summary)
 
-# Create a DataFrame with improved recurrence scores
-recurrence_df_improved = pd.DataFrame(recurrence_scores_improved)
-print(recurrence_df_improved)
+# Display detailed results per patient
+print("Detailed Results:")
+print(results_df)
