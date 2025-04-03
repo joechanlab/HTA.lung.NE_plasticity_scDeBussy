@@ -238,24 +238,33 @@ from pygam import LinearGAM, s
 def compute_derivative(y, x):
     return np.gradient(y, x)
 
+# Function to find the first increasing time point
+def find_first_increasing(pseudotime, trend):
+    derivative = compute_derivative(trend, pseudotime)
+    increasing_points = np.where(derivative > 0)[0]
+    return pseudotime[increasing_points[0]] if len(increasing_points) > 0 else None
+
 # Function to determine if ASCL1 increases before NEUROD1
 def analyze_increase_order(pseudotime, ascl1_trend, neurod1_trend):
-    # Compute derivatives (rate of change)
-    ascl1_derivative = compute_derivative(ascl1_trend, pseudotime)
-    neurod1_derivative = compute_derivative(neurod1_trend, pseudotime)
-    
     # Identify points where the trends start increasing
-    ascl1_increasing = np.where(ascl1_derivative > 0)[0]
-    neurod1_increasing = np.where(neurod1_derivative > 0)[0]
+    first_ascl1 = find_first_increasing(pseudotime, ascl1_trend)
+    first_neurod1 = find_first_increasing(pseudotime, neurod1_trend)
     
-    if len(ascl1_increasing) == 0 or len(neurod1_increasing) == 0:
-        return 0  # No increases detected
+    # Handle cases where one or both trends are flat
+    if first_ascl1 is None and first_neurod1 is None:
+        order = "Both Flat"
+    elif first_ascl1 is None:
+        order = "NEUROD1_before_ASCL1 (ASCL1 Flat)"
+    elif first_neurod1 is None:
+        order = "ASCL1_before_NEUROD1 (NEUROD1 Flat)"
+    elif first_ascl1 < first_neurod1:
+        order = "ASCL1_before_NEUROD1"
+    elif first_neurod1 < first_ascl1:
+        order = "NEUROD1_before_ASCL1"
+    else:
+        order = "Simultaneous"
     
-    # Compare the first increasing points
-    first_ascl1 = ascl1_increasing[0]
-    first_neurod1 = neurod1_increasing[0]
-    
-    return 1 if first_ascl1 < first_neurod1 else 0
+    return {"order": order, "first_ascl1": first_ascl1, "first_neurod1": first_neurod1}
 
 # Parameters for GAM fitting
 lam = 3
@@ -280,16 +289,64 @@ for patient in df['subject'].unique():
     
     # Analyze increase order
     result = analyze_increase_order(pseudotime_points, ascl1_trend, neurod1_trend)
-    
-    # Store results
-    results.append({'Patient': patient, 'ASCL1_before_NEUROD1': result})
+    result['patient'] = patient
+    results.append(result)
 
 # Convert results to DataFrame and summarize
 results_df = pd.DataFrame(results)
-summary = results_df.groupby('ASCL1_before_NEUROD1').size()
+
+# Count occurrences of each case
+summary = results_df['order'].value_counts()
 print("Summary of Events:")
 print(summary)
 
 # Display detailed results per patient
 print("Detailed Results:")
 print(results_df)
+
+
+# Plotting
+import matplotlib.pyplot as plt
+
+# Group data points by their coordinates (first_ascl1, first_neurod1)
+results_df['coordinates'] = list(zip(results_df['first_ascl1'], results_df['first_neurod1']))
+grouped = results_df.groupby('coordinates')['patient'].apply(', '.join).reset_index()
+grouped.columns = ['coordinates', 'patients']
+
+# Split coordinates back into first_ascl1 and first_neurod1 for plotting
+grouped['first_ascl1'] = grouped['coordinates'].apply(lambda x: x[0])
+grouped['first_neurod1'] = grouped['coordinates'].apply(lambda x: x[1])
+
+# Plotting with concatenated annotations
+plt.figure(figsize=(8, 6))
+
+# Scatter plot of unique coordinates
+for _, row in grouped.iterrows():
+    x = row['first_ascl1']
+    y = row['first_neurod1']
+    
+    # Plot the point
+    plt.scatter(x, y, s=150, alpha=0.8)
+    
+    # Annotate the point with concatenated patient IDs
+    annotation_x = x + 0.02  # Offset for annotation
+    annotation_y = y + 0.02
+    plt.text(annotation_x, annotation_y, row['patients'], fontsize=10, color='blue')
+    
+    # Draw a line pointing to the annotation
+    plt.plot([x, annotation_x], [y, annotation_y], color='black', linestyle='-', linewidth=0.5)
+
+# Add diagonal line for simultaneous expression
+plt.plot([0, 0.5], [0, 0.5], color='gray', linestyle='--', label='Simultaneous Increase')
+
+# Add labels and legend
+plt.xlabel('First ASCL1 Increase (Pseudotime)', fontsize=12)
+plt.ylabel('First NEUROD1 Increase (Pseudotime)', fontsize=12)
+plt.title('First Increasing Time Points of ASCL1 vs NEUROD1', fontsize=14)
+plt.grid(alpha=0.3)
+
+# Adjust axes limits and show plot
+plt.xlim(-0.05, 0.5)  # Set x-axis maximum limit to 0.5
+plt.ylim(-0.05, 0.5)  # Set y-axis maximum limit to 0.5
+plt.tight_layout()
+plt.show()
