@@ -12,10 +12,44 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from scipy.misc import electrocardiogram
 
-def soft_dtw_with_gaps(ts1, ts2, gamma=1.0, gap_penalty=1.0, be=None, verbose=False):
+class ShiftAwareDistance:
+    def __init__(self, ts1, ts2, max_shift=3, shift_weight=0.1, be=None):
+        self.ts1 = ts1
+        self.ts2 = ts2
+        self.max_shift = max_shift
+        self.shift_weight = shift_weight  # Penalty for larger shifts
+        self.be = instantiate_backend(be, ts1, ts2)
+        
+        if len(self.be.shape(self.ts1)) == 1:
+            self.ts1 = self.be.reshape(self.ts1, (-1, 1))
+        if len(self.be.shape(self.ts2)) == 1:
+            self.ts2 = self.be.reshape(self.ts2, (-1, 1))
+    
+    def compute(self):
+        m = self.be.shape(self.ts1)[0]
+        n = self.be.shape(self.ts2)[0]
+        D = self.be.full((m, n), self.be.inf)
+        S = self.be.zeros((m, n))  # Track best shifts
+        
+        for i in range(m):
+            for j in range(n):
+                min_dist = self.be.inf
+                best_shift = 0
+                for s in range(-self.max_shift, self.max_shift + 1):
+                    if 0 <= j + s < n:
+                        diff = self.ts1[i] - self.ts2[j + s]
+                        dist = self.be.sum(diff ** 2) + self.shift_weight * abs(s)
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_shift = s
+                D[i, j] = min_dist
+                S[i, j] = best_shift  # Store optimal shift
+        return D, S  # Return both distance and shift matrices
+
+def soft_dtw_with_gaps(ts1, ts2, gamma=1.0, gap_penalty=1.0, max_shift=10, be=None, verbose=False):
     """
     Modified SoftDTW with insertion/deletion operations using:
-    - Affine gap penalties (gap_extend = 0.2 * gap_penalty)
+    - Affine gap penalties (gap_extend = 0.5 * gap_penalty)
     - Automatic gap penalty calculation option
     - Stable softmin using logsumexp trick
     - Probability-weighted path tracking
@@ -39,25 +73,17 @@ def soft_dtw_with_gaps(ts1, ts2, gamma=1.0, gap_penalty=1.0, be=None, verbose=Fa
     ts1 = be.array(ts1)
     ts2 = be.array(ts2)
     
-    # Compute distance matrix
-    D = SquaredEuclidean(ts1, ts2, be=be).compute()
+    # Get both distance and shift matrices
+    D, S = ShiftAwareDistance(ts1, ts2, max_shift=max_shift, be=be).compute()
     m, n = be.shape(D)
     
-    if verbose:
-        print("Distance matrix D:")
-        print(D)
-    
     # Initialize matrices
-    R = be.full((m + 2, n + 2), be.inf)  # Cost matrix with padding
-    P = [[None] * (n + 2) for _ in range(m + 2)]  # Path probabilities
-    
-    # Track whether previous move was a gap (for affine penalty)
+    R = be.full((m + 2, n + 2), be.inf)
+    P = [[None] * (n + 2) for _ in range(m + 2)]
     from_deletion = be.zeros((m + 2, n + 2), dtype=bool)
     from_insertion = be.zeros((m + 2, n + 2), dtype=bool)
-    
-    # Set gap extension penalty (20% of gap_penalty)
-    gap_extend = 0.5 * gap_penalty
-    
+    gap_extend = 0.8 * gap_penalty
+
     # Initialize boundaries
     R[0, 0] = 0
     P[0][0] = be.array([0., 0., 0.])  # [match_prob, del_prob, ins_prob]
@@ -83,8 +109,9 @@ def soft_dtw_with_gaps(ts1, ts2, gamma=1.0, gap_penalty=1.0, be=None, verbose=Fa
     # Main recursion with stable softmin
     for i in range(1, m + 1):
         for j in range(1, n + 1):
-            # Compute raw costs
-            match_cost = R[i-1, j-1] + D[i-1, j-1]
+            # Incorporate shift information into match cost
+            shift_cost = abs(S[i-1, j-1]) * (gap_extend / max_shift)
+            match_cost = R[i-1, j-1] + D[i-1, j-1] + shift_cost
             
             # Affine deletion cost
             del_cost = R[i-1, j] + (gap_extend if from_deletion[i-1, j] else gap_penalty)
@@ -139,7 +166,7 @@ def soft_dtw_with_gaps(ts1, ts2, gamma=1.0, gap_penalty=1.0, be=None, verbose=Fa
 def length_based_penalty(sequence, max_len=20):
     return 0.5 * (len(sequence) / max_len)
 
-def compute_weights_from_barycenter(X, gamma=1.0, be=None, gap_penalty=1.0, n_init=3, temperature=0.1):
+def compute_weights_from_barycenter(X, gamma=1.0, be=None, gap_penalty=1.0, max_shift=10, n_init=3, temperature=0.1):
     """
     Compute weights based on distance to preliminary barycenter.
     
@@ -178,7 +205,7 @@ def compute_weights_from_barycenter(X, gamma=1.0, be=None, gap_penalty=1.0, n_in
     distances = be.zeros(len(X))
     for i in range(len(X)):
         cost, _ = soft_dtw_with_gaps(X[i], barycenter, gamma=gamma, 
-                                   gap_penalty=gap_penalty)
+                                   gap_penalty=gap_penalty, max_shift=max_shift)
         distances[i] = cost
     
     # Convert distances to weights using softmax
@@ -270,12 +297,11 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
     alignment_maps = []
 
     for i in range(len(X)):
-        gap_open = gap_penalties[i] if gap_penalties is not None else 1.0
-        gap_extend = 0.4 * gap_open
         # Reuse the distance matrix computation from soft_dtw_with_gaps
         Z_clean = np.nan_to_num(Z, nan=0.0, posinf=1e10, neginf=-1e10)
         X_clean = np.nan_to_num(X[i], nan=0.0, posinf=1e10, neginf=-1e10)
-        
+        gap_open = gap_penalties[i] if gap_penalties is not None else 1.0
+        gap_extend = gap_open * 0.8
         D = SquaredEuclidean(Z_clean, X_clean).compute()
         m, n = D.shape
         if verbose:
@@ -314,14 +340,10 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
         P[0][0] = np.array([0, 0, 0]) # start point
         
         # Forward pass - reuse the same logic as in soft_dtw_with_gaps
-        outlier_threshold = 2.0 * np.std(D)
         for j in range(1, m + 1):
             for k in range(1, n + 1):
                 dist = D[j-1, k-1]
-                if dist > outlier_threshold:
-                    match_cost = R[j-1, k-1] + 10 * dist
-                else:
-                    match_cost = R[j-1, k-1] + dist
+                match_cost = R[j-1, k-1] + dist
                 
                 if from_deletion[j-1, k]:
                     delete_cost = R[j-1, k] + gap_extend
@@ -383,6 +405,7 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
                     insert_grad = E[j, k+1] * insert_exp_term * P[j][k+1][2]
 
                     E[j, k] = match_grad + delete_grad + insert_grad
+                
                 elif j + 1 < E_rows:
                     if from_deletion[j+1, k]:
                         gap_penalty = gap_extend
@@ -393,6 +416,7 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
                     delete_term = np.clip(delete_term, -20, 20)
                     delete_exp_term = np.exp(-delete_term)
                     E[j, k] = E[j+1, k] * delete_exp_term * P[j+1][k][1]
+                
                 elif k + 1 < E_cols:
                     if from_insertion[j, k+1]:
                         gap_penalty = gap_extend
@@ -403,6 +427,7 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
                     insert_term = np.clip(insert_term, -20, 20)
                     insert_exp_term = np.exp(-insert_term)
                     E[j, k] = E[j, k+1] * insert_exp_term * P[j][k+1][2]
+                
                 else:
                     E[j, k] = 0  # Only for (0,0)
         if verbose:
@@ -415,10 +440,7 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
         for j in range(m):
             for k in range(n):
                 if j < m and k < n: # consider only matching pairs
-                    G_tmp[j] += E[j+1, k+1] * P[j+1][k+1][0] * (Z[j] - X[i][k])
-                elif k >= len(X[i]) - 3:  # If Near edges to allow borrow info
-                    borrow_factor = 0.5
-                    G_tmp[j] += E[j+1, k+1] * P[j+1][k+1][0] * (Z[j] - X[i][k]) * (1 - borrow_factor)
+                    G_tmp[j] += E[j+1, k+1] * P[j+1][k+1][0] * 2 * (Z[j] - X[i][k])
 
             if verbose:
                 plt.plot(G_tmp, label=f"TS {j} Gradient")
@@ -481,6 +503,81 @@ def extract_mappings(alignment_maps, X, barycenter):
     
     return mappings
 
+def detect_unreliable_genes_variance(X, variance_threshold=0.01, min_expression_level=0.01):
+    """
+    Identify genes with low expression variance in each sample.
+    
+    Parameters:
+        X: numpy array of shape (n_samples, n_timepoints, n_genes)
+        variance_threshold: Minimum variance to consider a gene reliable
+        min_expression_level: Minimum mean expression to consider a gene potentially reliable
+        
+    Returns:
+        List of boolean masks (one per sample) where True indicates unreliable genes
+    """
+    # Convert input to numpy array of floats
+    X = np.asarray(X, dtype=np.float64)
+    
+    n_samples, n_timepoints, n_genes = X.shape
+    unreliable_masks = []
+    
+    for sample_idx in range(n_samples):
+        sample_data = X[sample_idx]  # Get (timepoints × genes) for this sample
+        
+        # Calculate mean expression and variance
+        with np.errstate(invalid='ignore'):
+            mean_expression = np.nanmean(sample_data, axis=0)
+            variance = np.nanvar(sample_data, axis=0)
+        
+        # Identify genes with low expression or low variance
+        low_expression_mask = np.isnan(mean_expression) | (mean_expression < min_expression_level)
+        low_variance_mask = np.isnan(variance) | (variance < variance_threshold)
+        
+        # Combine masks - gene is unreliable if either condition is true
+        combined_mask = low_expression_mask | low_variance_mask
+        unreliable_masks.append(combined_mask)
+    
+    return unreliable_masks
+
+def extract_gene_specific_alignments(mappings, unreliable_masks, X):
+    """
+    Convert whole-cell alignments into gene-specific alignments.
+    
+    Parameters:
+        mappings: Original alignments from extract_mappings() 
+                 (list of (bary_indices, ts_indices) tuples)
+        unreliable_masks: List of boolean masks from detect_unreliable_genes()
+        X: Input data (samples × timepoints × genes)
+        
+    Returns:
+        List of lists: For each sample, a list of (gene_bary, gene_ts) tuples for each gene
+    """
+    n_samples = len(mappings)
+    n_genes = X.shape[2]
+    gene_alignments = []
+    
+    for sample_idx in range(n_samples):
+        # Get original whole-cell alignment
+        bary_indices, ts_indices = mappings[sample_idx]
+        mask = unreliable_masks[sample_idx]
+        
+        # For each gene, extract its specific alignment path
+        sample_gene_alignments = []
+        for gene_idx in range(n_genes):
+            if mask[gene_idx]:
+                # Unreliable gene - all gaps
+                gene_bary = [None] * len(bary_indices)
+                gene_ts = [None] * len(ts_indices)
+            else:
+                # Reliable gene - copy original alignment
+                gene_bary = bary_indices.copy()
+                gene_ts = ts_indices.copy()
+            
+            sample_gene_alignments.append((gene_bary, gene_ts))
+        
+        gene_alignments.append(sample_gene_alignments)
+    
+    return gene_alignments
 
 def plot_alignment_path(P):
     plt.imshow(P, cmap='viridis')
