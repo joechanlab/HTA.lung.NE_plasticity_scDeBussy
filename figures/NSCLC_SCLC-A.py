@@ -99,16 +99,18 @@ scores_df.sort_values(['GCV'], ascending=[True]).merge(hvg_df, on='gene').head(n
 df = gene_curves.iloc[:,1:].T
 
 plot_summary_curve(summary_df, gene_curves, scores_df, 
-                   ['TACSTD2', 'EZH2', 'DLL3'], 
+                   ['ASCL1', 'TACSTD2', 'EZH2', 'DLL3'], 
                    fig_size=(2.5, 1.5), pt_alpha=0.05)
 
 
 sorted_gene_curve, row_colors, col_colors, categories = process_gene_data(scores_df, gene_curves, colors, [0.5],
                                                                             n_clusters = 5, n_init=1, MI_threshold=1.2,
-                                                                            GCV_threshold=0.04, AIC_threshold=2e6, hierarchical=True,  
+                                                                            GCV_threshold=0.042, AIC_threshold=2.2e6, hierarchical=True,  
                                                                             label_names=['Early', 'Early', "Middle", 'Middle', 'Late'], weight=weight)
 print(sorted_gene_curve.shape)
 plot_kshape_clustering(sorted_gene_curve, categories, ['Early', 'Middle', 'Late'], alpha=0.03)
+pd.DataFrame({'gene': sorted_gene_curve.index, 'cluster': categories}).merge(scores_df).to_csv('NSCLC_SCLC-A/kshape_clustering_NSCLC_SCLC-A.csv')
+
 
 # sliding window plot (cell type)
 ordered_genes = sorted_gene_curve.index.tolist()
@@ -189,8 +191,9 @@ df_left.index = sorted_gene_curve.index
 
 density=None
 left_annotation_columns=None
+genes_to_label=['ASCL1', 'EZH2', 'TACSTD2'],
 plot_kde_heatmap(cluster_colors, cell_types, cell_type_colors, sorted_gene_curve, df_left, density, figsize=(3,8), left_annotation_columns=left_annotation_columns, 
-                 vmin=-3, vmax=3, save_path=f"/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/NSCLC_SCLC-A_heatmap_weight_{weight}.png")
+                 vmin=-3, vmax=3, genes_to_label=genes_to_label, save_path=f"/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/NSCLC_SCLC-A_heatmap_weight_{weight}.png")
 
 # Cell type
 names = ['Secretory', 'Basal', 'Cycling Basal', 
