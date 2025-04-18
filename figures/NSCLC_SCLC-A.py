@@ -95,18 +95,24 @@ color_map = {'NSCLC': 'gold',
 colors = [color_map[x] for x in clusters]
 scores_df = scores_df.merge(hvg_df, on='gene')
 scores_df.sort_values(['GCV'], ascending=[True]).merge(hvg_df, on='gene').head(n=50)
-
+filtered_genes = gene_curves.columns[1:][gene_curves.iloc[:,1:].apply(np.median) > 0.08]
+is_filtered_genes = gene_curves.columns.isin(filtered_genes).tolist()
+is_filtered_genes[0] = True
+scores_df = scores_df[scores_df['gene'].isin(filtered_genes)]
+gene_curves = gene_curves.loc[:,is_filtered_genes]
 df = gene_curves.iloc[:,1:].T
 
 plot_summary_curve(summary_df, gene_curves, scores_df, 
-                   ['ASCL1', 'TACSTD2', 'EZH2', 'DLL3'], 
+                   ['JUND'], 
                    fig_size=(2.5, 1.5), pt_alpha=0.05)
 
 
 sorted_gene_curve, row_colors, col_colors, categories = process_gene_data(scores_df, gene_curves, colors, [0.5],
-                                                                            n_clusters = 5, n_init=1, MI_threshold=1.2,
+                                                                            n_clusters = 8, n_init=1, MI_threshold=1.2,
                                                                             GCV_threshold=0.042, AIC_threshold=2.2e6, hierarchical=True,  
-                                                                            label_names=['Early', 'Early', "Middle", 'Middle', 'Late'], weight=weight)
+                                                                            label_names=['Early', 'Early', 'Early', 'Early',
+                                                                                         'Middle', 'Middle', 'Middle', 'Late'], weight=weight)
+                                                                            
 print(sorted_gene_curve.shape)
 plot_kshape_clustering(sorted_gene_curve, categories, ['Early', 'Middle', 'Late'], alpha=0.03)
 pd.DataFrame({'gene': sorted_gene_curve.index, 'cluster': categories}).merge(scores_df).to_csv('NSCLC_SCLC-A/kshape_clustering_NSCLC_SCLC-A.csv')
@@ -191,8 +197,24 @@ df_left.index = sorted_gene_curve.index
 
 density=None
 left_annotation_columns=None
-genes_to_label=['ASCL1', 'EZH2', 'TACSTD2'],
-plot_kde_heatmap(cluster_colors, cell_types, cell_type_colors, sorted_gene_curve, df_left, density, figsize=(3,8), left_annotation_columns=left_annotation_columns, 
+genes_to_label=[
+    # Original genes
+    "AQP3", "CD44", "CEACAM5", "FOSL1", "HES1", 
+    "IFITM3", "IRF1", "ISG15", "JUN", "JUND",
+    "KRT8", "LGALS3", "S100P", "SLPI", "STAT1",
+    "TACSTD2", "TMSB4X", "YAP1", "WWTR1", "WNT5A",
+    "ZFP36L1",
+    
+    # Second batch of added genes
+    "AKT3", "APOBEC3B", "ASCL2", "AURKA", "CHGA",
+    "ENO2", "EZH2", "E2F1", "FGFR1", "NEUROD1",
+    "NRXN1", "SYP",
+    
+    # Newly added genes (ADCYAP1, CALCA, etc.)
+    "ADCYAP1", "CALCA", "DLL3", "INSM1", "MYCN",
+    "NEUROD4", "NEUROG3", "SYT4"
+]
+plot_kde_heatmap(cluster_colors, cell_types, cell_type_colors, sorted_gene_curve, df_left, density, figsize=(3,4), left_annotation_columns=left_annotation_columns, 
                  vmin=-3, vmax=3, genes_to_label=genes_to_label, save_path=f"/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/NSCLC_SCLC-A_heatmap_weight_{weight}.png")
 
 # Cell type
