@@ -1,5 +1,5 @@
 import pandas as pd
-from constants import sample_groups
+from .constants import sample_groups
 import numpy as np
 from scipy.stats import fisher_exact
 
@@ -32,7 +32,7 @@ def classify_interaction(sender, receiver):
     """
     # Define cell type groups
     tumor_cells = ["NSCLC", "SCLC-A", "SCLC-N", "NonNE SCLC"]
-    immune_cells = ["Mφ/Mono", "Mφ/Mono_CD14", "Mφ/Mono_CD11c", "Mφ/Mono_CCL", "PMN", "Mast_cell", "pDC", 
+    immune_cells = ["Mφ/Mono", "Mφ/_Mono", "Mφ/Mono_CD14", "Mφ/Mono_CD11c", "Mφ/Mono_CCL", "PMN", "Mast_cell", "pDC", 
                     "CD4_EM/Effector", "CD4_naive/CM", "CD4_TRM", "CD8_TRM/EM", "T_reg", "NK", "ILC", "B_memory"]
     stromal_cells = ['Fibroblast', 'Endothelial', "Basal", "Ciliated"]
     

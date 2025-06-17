@@ -316,7 +316,7 @@ cellmarker_proportion_enriched = compute_patient_proportion(cellmarker_p_values,
 plot_enrichment_and_proportion(cellmarker_real_scores, cellmarker_proportion_enriched)
 
 plot_smoothed_mean_median_with_recurrence_heatmap(cellmarker_real_scores, cellmarker_proportion_enriched, 
-                                                  figsize=(7, 8), fontsize=23, short_labels=None, color="royalblue", 
+                                                  figsize=(8.5, 8), fontsize=30, short_labels=None, color="royalblue", 
                                                   save_path="NSCLC_SCLC-A_score_genes_cellmarker.png")
 
 #------------------------#
@@ -345,7 +345,7 @@ pathway_proportion_enriched = compute_patient_proportion(pathway_p_values, adata
 plot_enrichment_and_proportion(pathway_real_scores, pathway_proportion_enriched)
 
 plot_smoothed_mean_median_with_recurrence_heatmap(pathway_real_scores, pathway_proportion_enriched, 
-                                                  figsize=(6, 8), fontsize=23, short_labels=None, color="royalblue", 
+                                                  figsize=(7, 8), fontsize=30, short_labels=None, color="royalblue", 
                                                   save_path="NSCLC_SCLC-A_score_genes_pathway.png")
 
 #------------------------#

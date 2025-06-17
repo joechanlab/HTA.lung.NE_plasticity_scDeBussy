@@ -21,26 +21,32 @@ tumor_color_map = {
     "Mφ/Mono": "#66cc66",
     "Mφ/Mono\nCD14": "#99cc99",
     "Mφ/Mono\nCD11c": "#336633",
-    "Mast_cell": "#003300"
+    "Mast cell": "#003300"
 }
 
-
 sample_groups = {
-    "de_novo_SCLC_LUAD": [
+    "De novo SCLC and ADC": [
         "RU1311", "RU1124", "RU1108", "RU1065",
         "RU871", "RU1322", "RU1144", "RU1066",
         "RU1195", "RU779", "RU1152", "RU426",
         "RU1231", "RU222", "RU1215", "RU1145",
-        "RU1360", "RU1287"
+        "RU1360", "RU1287", 
     ],
-    "transformed_NE": [
+    "ADC → SCLC": [
         "RU1068", "RU1676", "RU263", "RU942",
         "RU325", "RU1304", "RU1444", "RU151",
         "RU1181", "RU1042", "RU581", "RU1303",
         "RU1305", "RU1250", "RU831", "RU1646",
         "RU226", "RU773", "RU1083", "RU1518",
-        "RU1414", "RU1405"
+        "RU1414", "RU1405", "RU1293"
     ]
+}
+
+# Create reversed dictionary where sample IDs are keys and their groups are values
+sample_to_group = {
+    sample_id: group
+    for group, samples in sample_groups.items()
+    for sample_id in samples
 }
 
 def read_tab_delimited_files(file_list):
@@ -62,7 +68,7 @@ def group_nsclc(x):
     if x in ['Basal-like_NSCLC', 'Mucinous_NSCLC']:
         return 'NSCLC'
     elif x == "NonNE SCLC":
-        return "NonNE\nSCLC"
+        return "NSCLC"
     elif x == "Mφ/_Mono":
         return "Mφ/Mono"
     elif x == "Mφ/Mono_CD11c":
@@ -77,8 +83,22 @@ def group_nsclc(x):
         return "CD4_naive\nCM"
     elif x == "CD8_TRM/EM":
         return "CD8_TRM\nEM"
+    elif x == "Mast_cell":
+        return "Mast cell"
     else:
         return x
+
+def get_interaction_type(sender, receiver):
+    if sender in tumor_cells and receiver in tumor_cells:
+        return "within_tumor"
+    elif ((sender in myeloid_cells and receiver in tumor_cells) or
+          (sender in tumor_cells and receiver in myeloid_cells)):
+        return "myeloid_tumor"
+    elif ((sender in lymphoid_cells and receiver in tumor_cells) or
+          (sender in tumor_cells and receiver in lymphoid_cells)):
+        return "lymphoid_tumor"
+    else:
+        return "other"
 
 #----------------------------------
 base_dir = "/data1/chanj3/HTA.lung.NE_plasticity.120122/fresh.combined/out.individual.120122/"
@@ -86,23 +106,20 @@ relevant_file_pattern = base_dir + "/*/cellphonedb.output/degs_analysis_relevant
 file_list =  glob.glob(relevant_file_pattern)
 label_file = "/data1/chanj3/morrill1/projects/HTA/results/figures-tables/factor_analysis/Spectra_HVGs/v7_KEGGAKTgenesetwPHOX2BwPOU3F2wMYCLwMYCN/SCLCNSCLC/light_factor_rescue/subsetpatientsTRUE/basal/comparison_with_other_basal_labels/SpectraScores_basal_cluster_summary.csv"
 label_df = pd.read_csv(label_file)
-basal_NonNE_samples = label_df.patient[(label_df.Basal_positive_cluster_Spectraclr) & (label_df.subtype == 'NonNE')].unique()
+condition_labels = pd.DataFrame(dict(
+    patient=extract_ru_subdir(file_list),
+    condition=[sample_to_group.get(x, "unknown") for x in extract_ru_subdir(file_list)]
+))
 
 #----------------------------------
+# compare the 15 subjects containing basal nonNE to rest of the 16 subjects
 subject_list = extract_ru_subdir(file_list)
-contains_basal_nonNE = [x in basal_NonNE_samples for x in subject_list]
-subject_list = [subject_list[i] for i in range(len(subject_list)) if contains_basal_nonNE[i]]
-file_list = [file_list[i] for i in range(len(file_list)) if contains_basal_nonNE[i]]
-condition_list = []
-for subject in subject_list:
-    condition = "unknown"
-    for group, samples in sample_groups.items():
-        if subject in samples:
-            condition = group
-            break
-    condition_list.append(condition)
-
+subject_list = list(set(subject_list) & set(condition_labels.patient))
+condition_labels.set_index('patient', inplace=True)
+condition_labels = condition_labels.loc[subject_list,:] # order the list as in the subject list
+file_list = [base_dir + x + "/cellphonedb.output/degs_analysis_relevant_interactions_042725.txt" for x in subject_list]
 dfs = read_tab_delimited_files(file_list)
+condition_list = condition_labels.condition.values
 
 #----------------------------------
 # Prepare for data for chord plot
@@ -132,28 +149,7 @@ for i, df in enumerate(dfs):
 relevance_long_df = pd.concat(long_df_list, ignore_index=True)
 relevance_long_df = relevance_long_df.loc[relevance_long_df.groupby(['subject', 'condition', 'sender', 'receiver', 'interacting_pair'])['value'].idxmax()]
 relevance_long_df = relevance_long_df.loc[~(((relevance_long_df.sender == 'NSCLC') & (relevance_long_df.receiver.isin(['SCLC-A', 'SCLC-N']))) | ((relevance_long_df.sender.isin(['SCLC-A', 'SCLC-N'])) & (relevance_long_df.receiver == 'NSCLC')) & (relevance_long_df.condition == 'de_novo_SCLC_LUAD'))]
-
-# 1. Identify unique conditions
-# conditions = relevance_long_df['condition'].unique()
-# cond1, cond2 = conditions
-
-# 2. Find shared senders and receivers
-# senders_1 = set(relevance_long_df[relevance_long_df['condition'] == cond1]['sender'])
-# senders_2 = set(relevance_long_df[relevance_long_df['condition'] == cond2]['sender'])
-# shared_senders = senders_1 & senders_2 | set(["Mφ/Mono\nCD11c", 'NonNE\nSCLC', 'SCLC']) 
-
-# receivers_1 = set(relevance_long_df[relevance_long_df['condition'] == cond1]['receiver'])
-# receivers_2 = set(relevance_long_df[relevance_long_df['condition'] == cond2]['receiver'])
-# shared_receivers = receivers_1 & receivers_2 | set(["Mφ/Mono\nCD11c", 'NonNE\nSCLC'])
-
-# # 3. Filter the DataFrame
-# relevance_long_df = relevance_long_df[
-#     (relevance_long_df['sender'].isin(shared_senders)) &
-#     (relevance_long_df['receiver'].isin(shared_receivers)) &
-#     (relevance_long_df['sender'] != 'SCLC-P') &
-#     (relevance_long_df['receiver'] != 'SCLC-P')
-# ].copy()
-
+relevance_long_df.loc[:,'condition'] = pd.Categorical(relevance_long_df['condition'], categories=["De novo SCLC and ADC", "ADC → SCLC"], ordered=True)
 # Assuming your DataFrame is named df
 pivot = relevance_long_df.pivot_table(
     index=['subject', 'condition', 'sender'],
@@ -198,81 +194,11 @@ plt.tight_layout()
 plt.show()
 
 #----------------------------------
-# 1. Chord plot
-all_nodes = set()
-for matrix_df in condition_matrices.values():
-    all_nodes.update(matrix_df.index)
-    all_nodes.update(matrix_df.columns)
-all_nodes = sorted(all_nodes)
-
-# 2. Assign a color to each node using a colormap
-# Use a colormap with enough distinct colors
-cmap = cm.get_cmap('tab20', len(all_nodes))
-node2color = {}
-for node in all_nodes:
-    if node in tumor_color_map:
-        node2color[node] = tumor_color_map[node]
-    else:
-        # Use your previous color assignment for non-tumor nodes
-        node2color[node] = mcolors.to_hex(cmap(all_nodes.index(node)))
-
-
-# 3. Plot chord diagrams for each condition with consistent color mapping
-images = []
-labels = []
-
-for condition, matrix_df in condition_matrices.items():
-    matrix_df = matrix_df.fillna(0)
-    # Ensure all nodes are present in the matrix (even if all zeros)
-    matrix_df = matrix_df.reindex(index=all_nodes, columns=all_nodes, fill_value=0)
-    # Remove all-zero rows and columns (optional, to avoid empty sectors)
-    matrix_df = matrix_df.loc[(matrix_df != 0).any(axis=1), (matrix_df != 0).any(axis=0)]
-    if matrix_df.empty:
-        print(f"Skipping {condition}: matrix is empty after filtering.")
-        continue
-
-    circos = Circos.chord_diagram(
-        matrix_df,
-        space=5,
-        cmap=node2color,  # Pass the node-to-color mapping
-        label_kws=dict(size=7),
-        link_kws=dict(ec="black", lw=0.5, direction=1),
-    )
-    # Save to a temporary file
-    tmpfile = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    circos.savefig(tmpfile.name)
-    images.append(Image.open(tmpfile.name))
-    labels.append(condition)
-
-# 4. Plot images side by side
-fig, axes = plt.subplots(1, len(images), figsize=(8 * len(images), 8))
-if len(images) == 1:
-    axes = [axes]
-for ax, img, label in zip(axes, images, labels):
-    ax.imshow(img)
-    ax.axis('off')
-    ax.set_title(label, fontsize=18)
-plt.tight_layout()
-plt.show()
-
-#----------------------------------
 # Separate the interaction as within tumors, myeloid-tumor, lymphoid tumor
-tumor_cells = {"NSCLC", "SCLC-A", "SCLC-N", 'NonNE\nSCLC'}
-myeloid_cells = {"Mφ/Mono", "Mφ/Mono\nCD14", "Mφ/Mono\nCD11c", "Mφ/Mono\nCCL", "PMN", "Mast_cell", "pDC"}
+tumor_cells = {"NSCLC", "SCLC-A", "SCLC-N"}
+myeloid_cells = {"Mφ/Mono", "Mφ/Mono\nCD14", "Mφ/Mono\nCD11c", "Mφ/Mono\nCCL", "PMN", "Mast cell", "pDC"}
 lymphoid_cells = {"CD4_EM\nEffector", "CD4_naive\nCM", "CD4_TRM", "CD8_TRM\nEM", "T_reg", "NK", "ILC", "B_memory"}
 stromal_cells = {"Fibroblast", "Endothelial", "Basal", "Ciliated"}
-def get_interaction_type(sender, receiver):
-    if sender in tumor_cells and receiver in tumor_cells:
-        return "within_tumor"
-    elif ((sender in myeloid_cells and receiver in tumor_cells) or
-          (sender in tumor_cells and receiver in myeloid_cells)):
-        return "myeloid_tumor"
-    elif ((sender in lymphoid_cells and receiver in tumor_cells) or
-          (sender in tumor_cells and receiver in lymphoid_cells)):
-        return "lymphoid_tumor"
-    else:
-        return "other"
-
 relevance_long_df['interaction_type'] = relevance_long_df.apply(
     lambda row: get_interaction_type(row['sender'], row['receiver']), axis=1
 )
@@ -296,7 +222,7 @@ for interaction_type in interaction_types:
     all_senders = median.index.get_level_values('sender').unique().sort_values()
 
     condition_matrices = {}
-    for condition in median.index.get_level_values('condition').unique():
+    for condition in ["De novo SCLC and ADC", "ADC → SCLC"]:
         cond_df = median.loc[condition]
         cond_df_reindexed = cond_df.reindex(all_senders, fill_value=0)
         condition_matrices[condition] = cond_df_reindexed
@@ -330,9 +256,9 @@ for interaction_type in interaction_types:
 
         circos = Circos.chord_diagram(
             matrix_df,
-            space=10,
+            space=19,
             cmap=node2color,
-            label_kws=dict(size=18),
+            label_kws=dict(size=25),
             link_kws=dict(ec="black", lw=0.5, direction=1),
             #order=filtered_order
         )
@@ -343,43 +269,46 @@ for interaction_type in interaction_types:
 
     # Plot images side by side
     if images:
-        fig, axes = plt.subplots(1, len(images), figsize=(5 * len(images), 5))
+        fig, axes = plt.subplots(1, len(images), figsize=(4 * len(images), 4))
         if len(images) == 1:
             axes = [axes]
         for ax, img, label in zip(axes, images, labels):
             ax.imshow(img)
             ax.axis('off')
-            ax.set_title(f"{interaction_type}: {label}", fontsize=18)
+            ax.set_title(f"{label}", fontsize=21)
         plt.tight_layout()
+        fig.savefig(f"{interaction_type}_chord_plot.png", dpi=300, bbox_inches='tight')
         plt.show()
 
 
 #----------------------------------
-# dot plot
-# Filter for Non-NE NSCLC
-
+# dot plot for Joe's basal-focused grant proposal
 def group_nsclc(x):
     if x in ['Basal-like_NSCLC', 'Mucinous_NSCLC']:
         return 'NSCLC'
     elif x == "Mφ/_Mono":
         return "Mφ/Mono"
+    elif x == "Mφ/Mono_CD14":
+        return "Mφ/Mono CD14"
+    elif x == "Mφ/Mono_CD11c":
+        return "Mφ/Mono CD11c"
+    elif x == "Mast_cell":
+        return "Mast cell"
+    elif x == "CD4_naive/CM":
+        return "CD4 naive/CM"
+    elif x == "CD4_EM/Effector":
+        return "CD4 EM/Effector"
+    elif x == "CD4_TRM":
+        return "CD4 TRM"
+    elif x == "CD8_TRM/EM":
+        return "CD8 TRM/EM"
+    elif x == "T_reg":
+        return "T reg"
+    elif x == "B_memory":
+        return "B memory"
     else:
         return x
-mean_file_pattern = base_dir + "/*/cellphonedb.output/degs_analysis_significant_means_042725.txt"
-means_list = glob.glob(mean_file_pattern)
-subject_list = extract_ru_subdir(means_list)
-contains_basal_nonNE = [x in basal_NonNE_samples for x in subject_list]
-subject_list = [subject_list[i] for i in range(len(subject_list)) if contains_basal_nonNE[i]]
-means_list = [means_list[i] for i in range(len(means_list)) if contains_basal_nonNE[i]]
-
-condition_list = []
-for subject in subject_list:
-    for group, samples in sample_groups.items():
-        if subject in samples:
-            condition_list.append(group)
-            break
-    else:
-        condition_list.append("unknown") 
+means_list = [base_dir + x + "/cellphonedb.output/degs_analysis_significant_means_042725.txt" for x in subject_list]
 means_dfs = read_tab_delimited_files(means_list)
 
 # Load the means files
@@ -412,32 +341,16 @@ for i, df in enumerate(means_dfs):
             long_df_list.append(long_df)
 long_df = pd.concat(long_df_list, ignore_index=True)
 long_df = long_df.loc[long_df.groupby(['subject', 'condition', 'sender', 'receiver', 'interacting_pair'])['value'].idxmax()]
+long_df = long_df.loc[~(((long_df.sender == 'NSCLC') & (long_df.receiver.isin(['SCLC-A', 'SCLC-N']))) | ((long_df.sender.isin(['SCLC-A', 'SCLC-N'])) & (long_df.receiver == 'NSCLC')) & (long_df.condition == 'de_novo_SCLC_LUAD'))]
 
-# combine the information from the relevance as well
-# conditions = long_df['condition'].unique()
-# if len(conditions) != 2:
-#     raise ValueError("Expected exactly two conditions, found: {}".format(conditions))
-
-# cond1, cond2 = conditions
-
-# # 2. Find shared senders and receivers
-# senders_1 = set(long_df[long_df['condition'] == cond1]['sender'])
-# senders_2 = set(long_df[long_df['condition'] == cond2]['sender'])
-# shared_senders = senders_1 & senders_2 | set(["Mφ/Mono\nCD11c", 'NonNE\nSCLC', 'Fibroblast', 'Mesothelia']) 
-
-# receivers_1 = set(long_df[long_df['condition'] == cond1]['receiver'])
-# receivers_2 = set(long_df[long_df['condition'] == cond2]['receiver'])
-# shared_receivers = receivers_1 & receivers_2 | set(["Mφ/Mono\nCD11c", 'NonNE\nSCLC']) 
-
-# # 3. Filter the DataFrame
-# long_df = long_df[
-#     (long_df['sender'].isin(shared_senders)) &
-#     (long_df['receiver'].isin(shared_receivers)) &
-#     (long_df['sender'] != 'SCLC-P') &
-#     (long_df['receiver'] != 'SCLC-P')
-# ].copy()
-
-# Assuming your DataFrame is named df
+tumor_cells = {"NSCLC", "SCLC-A", "SCLC-N"}
+myeloid_cells = {"Mφ/Mono", "Mφ/Mono CD14", "Mφ/Mono CD11c", "Mφ/Mono CCL", "PMN", "Mast cell", "pDC"}
+lymphoid_cells = {"CD4 EM/Effector", "CD4 naive/CM", "CD4 TRM", "CD8 TRM/EM", "T reg", "NK", "ILC", "B memory"}
+stromal_cells = {"Fibroblast", "Endothelial", "Basal", "Ciliated"}
+long_df['interaction_type'] = long_df.apply(
+    lambda row: get_interaction_type(row['sender'], row['receiver']), axis=1
+)
+long_df = long_df[long_df.interaction_type == 'myeloid_tumor']
 pivot = long_df.pivot_table(
     index=['subject', 'condition', 'sender', 'interacting_pair'],
     columns='receiver',
@@ -451,43 +364,137 @@ pivot_reset['sender_receiver_pair'] = pivot_reset['sender'] + '→' + pivot_rese
 
 # Group by condition and sender, then average across subjects
 median = pivot_reset.drop(columns=['subject']).groupby(['condition', 'sender', 'receiver', 'sender_receiver_pair', 'interacting_pair']).median().reset_index()
+
 # Set up FacetGrid
 receiver_order = sorted(median['receiver'].unique())
 median['receiver'] = pd.Categorical(median['receiver'], categories=receiver_order, ordered=True)
 median = median.sort_values('receiver')
+
+# Set condition order
+median['condition'] = pd.Categorical(median['condition'], 
+                                   categories=["De novo SCLC and ADC", "ADC → SCLC"],
+                                   ordered=True)
 
 # Optionally, create a categorical for sender_receiver_pair that follows receiver order
 median['sender_receiver_pair'] = median['sender'] + '→' + median['receiver'].astype(str)
 sender_receiver_order = median.sort_values('receiver')['sender_receiver_pair'].unique()
 median['sender_receiver_pair'] = pd.Categorical(median['sender_receiver_pair'], categories=sender_receiver_order, ordered=True)
 median = median[median.value != 0]
-# Set up FacetGrid with reduced height and aspect
-g = sns.FacetGrid(median, col="condition", sharex=False, sharey=True, height=4, aspect=2)
+median['interacting_pair'] = median['interacting_pair'].replace(
+    {'CD1B_complex_IL6ST': 'CD1B_IL6ST'}
+)
 
-def dotplot(data, color, **kwargs):
-    ax = plt.gca()
-    sc = ax.scatter(
-        data['sender_receiver_pair'],
-        data['interacting_pair'],
-        s=data['value']*50,
-        c=data['value'],
-        cmap='viridis',
-        alpha=0.7,
-        edgecolors='w',
-        linewidth=0.5
-    )
-    plt.xticks(rotation=90)
-    plt.xlabel('Sender → Receiver')
-    plt.ylabel('Interacting Pair')
-    # Add colorbar for each subplot
-    cbar = plt.colorbar(sc, ax=ax, orientation='vertical', fraction=0.05, pad=0.02)
-    cbar.set_label('Value')
-    # Add horizontal and vertical padding to prevent clipping
-    ax.margins(x=0.1, y=0.2)
+tumor_color_map = {
+    "NSCLC": "gold",      # Yellow
+    "SCLC-A": "tab:red",      # Red
+    "SCLC-N": "tab:cyan",      # Cyan
+    "SCLC-P": "tab:blue",      # Blue
+    "NonNE SCLC": "tab:purple"}
 
-g.map_dataframe(dotplot)
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import numpy as np
 
-# Adjust subplot spacing and margins to reduce whitespace
-g.fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.2, wspace=0.3)
-plt.tight_layout(pad=1.0)
+conditions = median['condition'].cat.categories
+
+# Compute width ratios based on unique sender_receiver_pair counts
+width_ratios = [
+    median[median['condition'] == cond]['sender_receiver_pair'].nunique()
+    for cond in conditions
+]
+width_ratios = np.array(width_ratios, dtype=float)
+width_ratios /= width_ratios.min()
+
+# Fix interacting_pair order for y-axis
+from scipy.cluster.hierarchy import linkage, leaves_list
+import pandas as pd
+
+# Pivot to matrix form
+
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+# Choose condition
+condition = "ADC → SCLC"
+
+# Filter and sort data
+condition_data = median[median['condition'] == condition].copy()
+pivot = condition_data.pivot_table(
+    index='interacting_pair',
+    columns='sender_receiver_pair',
+    values='value',
+    aggfunc='mean',
+    fill_value=0
+)
+linkage_rows = linkage(pivot, method='average', metric='euclidean')
+interacting_order = pivot.index[leaves_list(linkage_rows)]
+
+# Update categorical order in original DataFrame
+condition_data['interacting_pair'] = pd.Categorical(
+    condition_data['interacting_pair'],
+    categories=interacting_order,
+    ordered=True
+)
+
+# Get sender-receiver pairs
+all_pairs = condition_data['sender_receiver_pair'].unique()
+
+# Create full grid
+full_index = pd.MultiIndex.from_product(
+    [all_pairs, interacting_order],
+    names=['sender_receiver_pair', 'interacting_pair']
+)
+condition_data = condition_data.set_index(['sender_receiver_pair', 'interacting_pair'])
+condition_data = condition_data.reindex(full_index).reset_index()
+condition_data['value'] = condition_data['value'].fillna(0)
+
+# Remove all-zero columns and rows
+nonzero_senders = (
+    condition_data.groupby('sender_receiver_pair')['value'].sum().reset_index().query("value > 0")
+)
+filtered = condition_data.merge(nonzero_senders[['sender_receiver_pair']], on='sender_receiver_pair')
+
+nonzero_interactions = (
+    filtered.groupby('interacting_pair')['value'].sum().reset_index().query("value > 0")
+)
+filtered = filtered.merge(nonzero_interactions[['interacting_pair']], on='interacting_pair')
+
+# Plotting
+fig = plt.figure(figsize=(1.5, 3))
+gs = gridspec.GridSpec(1, 1)
+ax = fig.add_subplot(gs[0])
+
+sc = ax.scatter(
+    filtered['interacting_pair'],
+    filtered['sender_receiver_pair'],
+    s=filtered['value'] * 50,
+    c=filtered['value'],
+    cmap='viridis',
+    alpha=0.7,
+    edgecolors='w',
+    linewidth=0.5,
+    vmax=1.5,
+)
+ax.margins(x=0.15, y=0.08)
+
+# Reverse y-axis
+ax.invert_yaxis()
+
+# Move x-axis ticks to top and rotate
+ax.xaxis.tick_top()
+plt.setp(ax.get_xticklabels(), rotation=45, ha='left')
+
+# Set axis labels
+ax.set_xlabel('Ligand Receptor', fontsize=12, fontstyle='normal', fontweight='bold', labelpad=3)
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Sender → Receiver', fontsize=12, fontstyle='normal', fontweight='bold')
+
+# Adjust spacing
+fig.subplots_adjust(left=0.25, right=0.95, top=0.8, bottom=0.1)
+
+# Colorbar - move further left
+cbar_ax = fig.add_axes([-0.5, 1, 0.3, 0.03])  # [left, bottom, width, height]
+cb = fig.colorbar(sc, cax=cbar_ax, orientation='horizontal')
+cb.set_label('Expression')
+plt.savefig('Joe_basal_dotplot.png', dpi=300, bbox_inches='tight')
 plt.show()

@@ -1,3 +1,4 @@
+import math
 import matplotlib.pyplot as plt
 import pandas as pd
 import scanpy as sc
@@ -6,26 +7,16 @@ import seaborn as sns
 from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import pdist
 import numpy as np
-import math
 import matplotlib.gridspec as gridspec
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
                               row_order=None, pval_threshold=None, 
                               facet_by=None, facet_order=None):
-
-    import pandas as pd
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    
 
     if pval_threshold is not None:
         type_summary = type_summary[type_summary['fisher_pval'] < pval_threshold].copy()
-
-    type_summary['freq_diff'] = (
-        type_summary['ADC → SCLC_relevance_freq'] -
-        type_summary['De novo SCLC and ADC_relevance_freq']
-    )
 
     top_interactions = type_summary.head(top_n).copy()
     top_interactions[['sender', 'receiver']] = top_interactions['sender_receiver_pair'].str.split('→', expand=True)
@@ -404,6 +395,42 @@ def plot_lr_network_unweighted(
     plt.axis('off')
     plt.tight_layout()
 
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to {save_path}")
+    else:
+        plt.show()
+    plt.close()
+
+def plot_rank_histograms(liana_df, figsize=(12, 5), save_path=None):
+    """
+    Plot side-by-side histograms of specificity and magnitude ranks.
+    
+    Parameters:
+    -----------
+    liana_df : pandas.DataFrame
+        DataFrame containing computed_specificity_rank and computed_magnitude_rank columns
+    figsize : tuple
+        Figure size (width, height)
+    save_path : str, optional
+        Path to save the plot. If None, plot will be displayed.
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    
+    # Plot specificity rank histogram
+    ax1.hist(liana_df['computed_specificity_rank'], bins=50, color='#1f77b4', alpha=0.7)
+    ax1.set_title('Specificity Rank Distribution')
+    ax1.set_xlabel('Specificity Rank')
+    ax1.set_ylabel('Count')
+    
+    # Plot magnitude rank histogram
+    ax2.hist(liana_df['computed_magnitude_rank'], bins=50, color='#ff7f0e', alpha=0.7)
+    ax2.set_title('Magnitude Rank Distribution')
+    ax2.set_xlabel('Magnitude Rank')
+    ax2.set_ylabel('Count')
+    
+    plt.tight_layout()
+    
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Plot saved to {save_path}")

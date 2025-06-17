@@ -20,3 +20,18 @@ sample_to_group = {
     for group, samples in sample_groups.items()
     for sample_id in samples
 }
+
+tumor_color_map = {
+    "NSCLC": "gold",      # Yellow
+    "SCLC-A": "tab:red",      # Red
+    "SCLC-N": "tab:cyan",      # Cyan
+    "SCLC-P": "tab:blue",      # Blue
+    "NonNE\nSCLC": "tab:purple",  # Purple
+    "NonNE SCLC": "tab:purple",  # Purple
+    "pDC": "#004d00",
+    "PMN": "#339933",
+    "Mφ/Mono": "#66cc66",
+    "Mφ/Mono\nCD14": "#99cc99",
+    "Mφ/Mono\nCD11c": "#336633",
+    "Mast cell": "#003300"
+}

@@ -15,8 +15,8 @@ path = "/data1/chanj3/HTA.lung.NE_plasticity.120122/fresh.SCLC_NSCLC.062124/indi
 n_cols = 4
 downsample = 5000
 cellrank_obsms = 'palantir_pseudotime_slalom'
-clusters = ['NSCLC', 'SCLC-A', 'SCLC-N']
-samples = ['RU1083', 'RU1444', 'RU581', 'RU831', 'RU942', 'RU263', 'RU151', 'RU1303','RU1518', 'RU1646']
+clusters = ['NSCLC', 'SCLC-A', 'SCLC-N', 'RB1-proficient NSCLC', 'RB1-deficient NSCLC']
+samples = ['RU1083', 'RU1444', 'RU581', 'RU831', 'RU942', 'RU263', 'RU151', 'RU1303','RU1518', 'RU1646', 'RU1250']
 n_samples = len(samples)
 n_rows = (n_samples + n_cols - 1) // n_cols
 color_map = {"NSCLC": "gold", "SCLC-A": "tab:red", "SCLC-N": "tab:cyan"}
@@ -51,7 +51,7 @@ h5ad_files = [os.path.join(path, x + ".no_cc.hvg_2000.090124.h5ad") if x != 'RU2
 combined_adata, df = create_cellrank_probability_df(h5ad_files, 'cell_type_final2', samples, clusters, 
                                                     cellrank_obsms, 
                                                     cellrank_cols_dict=result_dict, downsample=downsample, need_all_clusters=False)
-df['score'] = df.groupby('subject')['score'].transform(lambda x: (x - x.min()) / (x.max() - x.min()))
+df['score'] = df.groupby('subject', observed=True)['score'].transform(lambda x: (x - x.min()) / (x.max() - x.min()))
 lam = 3
 n_splines = 5
 df_samples = []

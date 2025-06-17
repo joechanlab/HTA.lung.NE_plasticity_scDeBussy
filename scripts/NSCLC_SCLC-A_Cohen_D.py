@@ -8,8 +8,11 @@ from scipy.stats import gaussian_kde, ttest_ind_from_stats
 from statsmodels.stats.multitest import multipletests
 from tqdm import tqdm
 from pygam import LinearGAM, s
+import anndata
+import scanpy as sc
 from scdebussy.pp import stratified_downsample
 from scdebussy.tl import aligner
+import json
 
 def cohens_d(x, y):
     nx, ny = len(x), len(y)
@@ -272,6 +275,9 @@ def read_gmt(gmt_file):
             gene_sets[gene_set_name] = gene_set
     return gene_sets
 
+#----------------------#
+# Load data #
+#----------------------#
 os.chdir("/data1/chanj3/HTA.lung.NE_plasticity.120122/fresh.SCLC_NSCLC.062124/results_all_genes/preprocessing")
 df = pd.read_csv('NSCLC_SCLC-A/cellrank.NSCLC_SCLC-A.csv', index_col=0)
 counts = pd.read_csv('NSCLC_SCLC-A/counts.NSCLC_SCLC-A.csv', index_col=0)
@@ -291,12 +297,72 @@ aligned_obj.align()
 df = aligned_obj.df
 df_columns_selected = ['subject', 'aligned_score']
 df_columns_selected = df_columns_selected + df.columns[11:].values.tolist()
+adata = anndata.AnnData(df.iloc[:, 11:], obs=df.iloc[:, :11])
+adata.write_h5ad('/scratch/chanj3/wangm10/NSCLC_SCLC-A.h5ad')
+
+#----------------------#
+# CellMarker Analysis #
+#----------------------#
 # get the cellmarker gene set genes
 cellmarker_path = "/data1/chanj3/wangm10/gene_sets/CellMarker_2024.txt"
 cellmarker_gene_set = read_gmt(cellmarker_path)
 gene_sets_of_interest = ['Secretory Cell Lung Human', 'Basal Cell Lung Human', 'Cycling Basal Cell Trachea Mouse', 
                         'Neural Progenitor Cell Embryonic Prefrontal Cortex Human', 'Neuroendocrine Cell Trachea Mouse'] # 'Mesenchymal Stem Cell Undefined Human', 
-names = ['Secretory', 'Basal', 'Cycling Basal', 'Neural Progenitor',  "Neuroendocrine"] 
+names = ['Secretory', 'Basal', 'Cycling Basal', 'Neural Progenitor',  "Neuroendocrine"]
+name_to_genes_dict = {
+    name: cellmarker_gene_set.get(gene_set, [])  # Use .get() to handle missing keys gracefully
+    for name, gene_set in zip(names, gene_sets_of_interest)
+}
+output_file = "/scratch/chanj3/wangm10/cellmarker_dict.json"
+with open(output_file, 'w') as f:
+    json.dump(name_to_genes_dict, f, indent=4)
+# score genes
+
+
+# Get unique patients
+patients = adata.obs['subject'].unique()
+n_patients = len(patients)
+n_gene_sets = len(gene_sets_of_interest)
+
+# Create subplots: one row per patient, one column per gene set
+fig, axes = plt.subplots(nrows=n_patients, ncols=n_gene_sets, figsize=(3 * n_gene_sets, 3 * n_patients), sharex=True, sharey=True)
+
+# If there's only one patient, make axes a 2D array for indexing consistency
+if n_patients == 1:
+    axes = np.array([axes])
+
+# Iterate through patients
+for row_idx, patient in enumerate(patients):
+    patient_data = adata[adata.obs['subject'] == patient].copy()
+    
+    # Iterate through gene sets
+    for col_idx, (gene_set, name) in enumerate(zip(gene_sets_of_interest, names)):
+        ax = axes[row_idx, col_idx]
+
+        # Score genes
+        genes = cellmarker_gene_set[gene_set]
+        sc.tl.score_genes(patient_data, genes, ctrl_as_ref=False, ctrl_size=len(genes), n_bins=50, score_name=name)
+
+        # Scatter plot of pseudotime vs gene set score
+        ax.scatter(patient_data.obs['aligned_score'], patient_data.obs[name], alpha=0.1, s=10, label="Data")
+
+        # Fit and plot GAM smoothing
+        gam = LinearGAM(s(0, n_splines=5)).fit(patient_data.obs['aligned_score'], patient_data.obs[name])
+        x_smooth = np.linspace(patient_data.obs['aligned_score'].min(), patient_data.obs['aligned_score'].max(), 100)
+        y_pred = gam.predict(x_smooth)
+        ax.plot(x_smooth, y_pred, color='black', label='GAM Fit')
+
+        # Titles and labels
+        if row_idx == 0:
+            ax.set_title(name)
+        if col_idx == 0:
+            ax.set_ylabel(f"Patient {patient}")
+
+# Adjust layout and show the figure
+plt.tight_layout()
+plt.show()
+
+
 cellmarker_short_labels = dict(zip(gene_sets_of_interest, names))
 cellmarker_results = {}
 # compute the enrichment for each gene set
@@ -307,11 +373,23 @@ for gene_set in gene_sets_of_interest:
     cellmarker_results[gene_set] = enrichment
 plot_cohens_d_ridge(cellmarker_results, short_labels=cellmarker_short_labels, figsize=(3, 5), fontsize=10, save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/cell_marker_ridge.png")
 
+#----------------------#
+# Pathway Analysis #
+#----------------------#
+
 # get the pathway gene set genes
 with open("/data1/chanj3/morrill1/projects/HTA/data/biological_reference/spectra_gene_sets/Spectra.NE_NonNE.gene_sets.p", "rb") as infile:
     pathway_gene_set = pickle.load(infile)['global']
 gene_sets_of_interest = ['all_TNF-via-NFkB_signaling', 'all_IL6-JAK-STAT3_signaling', 'all_PI3K-AKT-mTOR_signaling',  'all_MYC_targets', 'all_DNA-repair']
 names = ['NFkB', "JAK-STAT3", "PI3K-AKT", 'MYC',  'DNA repair']
+name_to_genes_dict = {
+    name: pathway_gene_set.get(gene_set, [])  # Use .get() to handle missing keys gracefully
+    for name, gene_set in zip(names, gene_sets_of_interest)
+}
+output_file = "/scratch/chanj3/wangm10/pathway_dict.json"
+with open(output_file, 'w') as f:
+    json.dump(name_to_genes_dict, f, indent=4)
+
 pathway_short_labels = dict(zip(gene_sets_of_interest, names))
 pathway_results = {}
 for gene_set in gene_sets_of_interest:
@@ -320,3 +398,65 @@ for gene_set in gene_sets_of_interest:
                                                            num_bins=10, p_value_threshold=0.05)
     pathway_results[gene_set] = enrichment
 plot_cohens_d_ridge(pathway_results, short_labels=pathway_short_labels, figsize=(3, 5), fontsize=10, save_path="/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/pathway_ridge.png")
+
+
+
+import pickle
+import numpy as np
+import matplotlib.pyplot as plt
+from pygam import LinearGAM, s
+import scanpy as sc
+
+# Load gene sets
+with open("/data1/chanj3/morrill1/projects/HTA/data/biological_reference/spectra_gene_sets/Spectra.NE_NonNE.gene_sets.p", "rb") as infile:
+    pathway_gene_set = pickle.load(infile)['global']
+
+# Define gene sets and corresponding names
+gene_sets_of_interest = [
+    'all_TNF-via-NFkB_signaling', 'all_IL6-JAK-STAT3_signaling', 
+    'all_PI3K-AKT-mTOR_signaling',  'all_MYC_targets', 'all_DNA-repair'
+]
+names = ['NFkB', "JAK-STAT3", "PI3K-AKT", 'MYC', 'DNA repair']
+
+# Get unique patients
+patients = adata.obs['subject'].unique()
+n_patients = len(patients)
+n_gene_sets = len(gene_sets_of_interest)
+
+# Create subplots: one row per patient, one column per gene set
+fig, axes = plt.subplots(nrows=n_patients, ncols=n_gene_sets, figsize=(3 * n_gene_sets, 3 * n_patients), sharex=True, sharey=True)
+
+# If there's only one patient, make axes a 2D array for indexing consistency
+if n_patients == 1:
+    axes = np.array([axes])
+
+# Iterate through patients
+for row_idx, patient in enumerate(patients):
+    patient_data = adata[adata.obs['subject'] == patient].copy()
+    
+    # Iterate through gene sets
+    for col_idx, (gene_set, name) in enumerate(zip(gene_sets_of_interest, names)):
+        ax = axes[row_idx, col_idx]
+
+        # Score genes
+        genes = pathway_gene_set[gene_set]
+        sc.tl.score_genes(patient_data, genes, ctrl_as_ref=False, ctrl_size=len(genes), n_bins=50, score_name=name)
+
+        # Scatter plot of pseudotime vs gene set score
+        ax.scatter(patient_data.obs['aligned_score'], patient_data.obs[name], alpha=0.1, s=10, label="Data")
+
+        # Fit and plot GAM smoothing
+        gam = LinearGAM(s(0, n_splines=5)).fit(patient_data.obs['aligned_score'], patient_data.obs[name])
+        x_smooth = np.linspace(patient_data.obs['aligned_score'].min(), patient_data.obs['aligned_score'].max(), 100)
+        y_pred = gam.predict(x_smooth)
+        ax.plot(x_smooth, y_pred, color='black', label='GAM Fit')
+
+        # Titles and labels
+        if row_idx == 0:
+            ax.set_title(name)
+        if col_idx == 0:
+            ax.set_ylabel(f"Patient {patient}")
+
+# Adjust layout and show the figure
+plt.tight_layout()
+plt.show()

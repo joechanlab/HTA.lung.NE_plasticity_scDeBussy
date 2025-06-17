@@ -83,9 +83,9 @@ scores_df_path = "NSCLC_SCLC-A/NSCLC_SCLC-A_scores_df.csv"
 hvg_df_path = "NSCLC_SCLC-A/hvg_genes_NSCLC_SCLC-A.txt"
 cluster_ordering = "NSCLC_SCLC-A"
 weight = 0.5
-summary_df = pd.read_csv(summary_df_path, index_col=0)
-gene_curves = pd.read_csv(aggregated_curves_path, index_col=0)
-scores_df = pd.read_csv(scores_df_path, index_col=0)
+summary_df = pd.read_csv(summary_df_path, index_col=0).drop_duplicates()
+gene_curves = pd.read_csv(aggregated_curves_path, index_col=0).drop_duplicates()
+scores_df = pd.read_csv(scores_df_path, index_col=0).drop_duplicates()
 hvg_df = pd.read_csv(hvg_df_path, sep="\t")
 hvg_df.columns = ["gene", "rank", "batches"]
 clusters = cluster_ordering.split("_")
@@ -103,8 +103,8 @@ gene_curves = gene_curves.loc[:,is_filtered_genes]
 df = gene_curves.iloc[:,1:].T
 
 plot_summary_curve(summary_df, gene_curves, scores_df, 
-                   ['JUND'], 
-                   fig_size=(2.5, 1.5), pt_alpha=0.05)
+                   ['CD44', 'LGALS7B', 'MKI67', 'ELAVL3', 'AKT3'], 
+                   figsize=(1.5, 4), pt_alpha=0.05, dpi=300)
 
 
 sorted_gene_curve, row_colors, col_colors, categories = process_gene_data(scores_df, gene_curves, colors, [0.5],
@@ -114,9 +114,19 @@ sorted_gene_curve, row_colors, col_colors, categories = process_gene_data(scores
                                                                                          'Middle', 'Middle', 'Middle', 'Late'], weight=weight)
                                                                             
 print(sorted_gene_curve.shape)
-plot_kshape_clustering(sorted_gene_curve, categories, ['Early', 'Middle', 'Late'], alpha=0.03)
-pd.DataFrame({'gene': sorted_gene_curve.index, 'cluster': categories}).merge(scores_df).to_csv('NSCLC_SCLC-A/kshape_clustering_NSCLC_SCLC-A.csv')
+cell_type_colors = {
+    'NSCLC': 'gold', 'SCLC-A': 'tab:red'
+}
+cell_types = col_colors.map(lambda x: 'NSCLC' if x == 0 else 'SCLC-A')
+clusters = row_colors
+cluster_colors = {}
+for i, category in enumerate(np.unique(categories)):
+    cluster_colors[category] = plt.get_cmap('Dark2')(i / len(np.unique(categories)))
 
+
+plot_kshape_clustering(sorted_gene_curve, categories, ['Early', 'Middle', 'Late'], alpha=0.03, label_colors=cluster_colors,
+                       save_path='/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/figures/NSCLC_SCLC-A_kshape_clustering.png', figsize=(1.5, 4))
+pd.DataFrame({'gene': sorted_gene_curve.index, 'cluster': categories}).merge(scores_df).to_csv('NSCLC_SCLC-A/kshape_clustering_NSCLC_SCLC-A.csv')
 
 # sliding window plot (cell type)
 ordered_genes = sorted_gene_curve.index.tolist()
@@ -181,14 +191,6 @@ sorted_gene_curve_with_annot = sorted_gene_curve.copy()
 sorted_gene_curve_with_annot.loc[:,'gene_sets'] = sorted_gene_curve_with_annot.index.map(final_gene_to_term)
 sorted_gene_curve_with_annot.loc[:,'cluster'] = row_colors.values
 
-cell_type_colors = {
-    'NSCLC': 'gold', 'SCLC-A': 'tab:red'
-}
-cell_types = col_colors.map(lambda x: 'NSCLC' if x == 0 else 'SCLC-A')
-clusters = row_colors
-cluster_colors = {}
-for i, category in enumerate(gene_info['category'].unique()):
-    cluster_colors[category] = plt.get_cmap('Dark2')(i / len(gene_info['category'].unique()))
 
 df_right = sorted_gene_curve_with_annot['gene_sets']
 df_right.index = sorted_gene_curve.index

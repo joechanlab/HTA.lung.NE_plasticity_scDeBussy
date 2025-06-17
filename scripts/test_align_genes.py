@@ -16,7 +16,7 @@ class scDeBussy:
         self.all_genes = None
         self.subjects = None
 
-    def inter_weights(self, exp_data, traj_cond, win_sz=0.3, num_pts=30):
+    def inter_weights(self, exp_data, traj_cond, win_sz=0.3, num_pts=30, traj_val_new_pts=None):
         """
         Interpolate gene expression data independently per gene in a concise and efficient manner.
 
@@ -25,6 +25,8 @@ class scDeBussy:
             traj_cond (np.ndarray): Pseudotime values for each sample.
             win_sz (float): Window size for Gaussian weighting.
             num_pts (int): Number of equally spaced pseudotime points for interpolation.
+            traj_val_new_pts (np.ndarray, optional): Pre-computed pseudotime points to use for interpolation.
+                                                    If None, will compute new points based on traj_cond range.
 
         Returns:
             tuple: Interpolated values (val_new_pts), new pseudotime points (traj_val_new_pts).
@@ -35,14 +37,19 @@ class scDeBussy:
             exp_data = exp_data.iloc[valid_idx, :]
             traj_cond = traj_cond[valid_idx]
 
-        # Generate equally spaced pseudotime points
-        traj_val_new_pts = np.linspace(min(traj_cond), max(traj_cond), num_pts)
+        # Generate or use provided pseudotime points
+        if traj_val_new_pts is None:
+            traj_val_new_pts = np.linspace(min(traj_cond), max(traj_cond), num_pts)
 
         # Compute pairwise distances between traj_cond and traj_val_new_pts
         dist_matrix = traj_cond[:, np.newaxis] - traj_val_new_pts[np.newaxis, :]  # Shape: (samples, new_pts)
 
-        # Compute Gaussian weights
-        weights = np.exp(-(dist_matrix**2) / (win_sz**2))  # Shape: (samples, new_pts)
+        # Compute adaptive window size based on local density
+        local_density = np.sum(np.exp(-(dist_matrix**2) / (win_sz**2)), axis=0)
+        adaptive_win_sz = win_sz * (1 + 0.1 * (1 - local_density / np.max(local_density)))
+
+        # Compute Gaussian weights with adaptive window size
+        weights = np.exp(-(dist_matrix**2) / (adaptive_win_sz**2))  # Shape: (samples, new_pts)
         weights /= np.sum(weights, axis=0, keepdims=True)  # Normalize weights along samples
 
         # Perform weighted sum for all genes at once using matrix multiplication
@@ -61,8 +68,6 @@ class scDeBussy:
             score_col (str): Column name for pseudotime/trajectory scores.
             n_samples (int): Maximum number of samples per subject.
             random_state (int): Random seed for reproducibility.
-            low_expression_threshold (float): Minimum mean expression threshold for filtering.
-            cv_threshold (float): Maximum CV threshold for filtering.
 
         Returns:
             self: Updated scDeBussy instance with filtered and interpolated data.
@@ -77,6 +82,11 @@ class scDeBussy:
         df_genes = df_genes.groupby(subject_col).apply(safe_sample).reset_index(drop=True)
         df_genes = df_genes.sort_values(by=[subject_col, score_col], ascending=[True, True])
         
+        # Compute global pseudotime range
+        global_min = df_genes[score_col].min()
+        global_max = df_genes[score_col].max()
+        traj_val_new_pts = np.linspace(global_min, global_max, self.num_pts)
+        
         # Interpolate data for each subject
         subject_arrays = []
         subjects = df_genes[subject_col].unique()
@@ -85,16 +95,14 @@ class scDeBussy:
             traj_cond = subject_data[score_col].values
             exp_data = subject_data[genes]
             
-            # Clip extreme values based on percentiles
-            lower_bound = exp_data.quantile(0.01)  # 1st percentile
-            upper_bound = exp_data.quantile(0.99)  # 99th percentile
-            exp_data_clipped = exp_data.clip(lower=lower_bound, upper=upper_bound, axis=1)
-            
-            # Apply min-max scaling after clipping
-            exp_data_scaled = (exp_data_clipped - exp_data_clipped.min()) / (exp_data_clipped.max() - exp_data_clipped.min())
-            exp_data_scaled = exp_data_scaled.fillna(0)  # Handle cases where max == min
-
-            val_new_pts, traj_val_new_pts = self.inter_weights(exp_data_scaled, traj_cond, win_sz=self.win_sz, num_pts=self.num_pts)
+            # Use the global pseudotime points for interpolation
+            val_new_pts, _ = self.inter_weights(
+                exp_data, 
+                traj_cond, 
+                win_sz=self.win_sz, 
+                num_pts=self.num_pts,
+                traj_val_new_pts=traj_val_new_pts
+            )
             subject_arrays.append(val_new_pts)
         
         self.subject_arrays = np.array(subject_arrays, dtype=object)
@@ -122,19 +130,44 @@ class scDeBussy:
             )
         return self
 
-    def plot_original_expression(self, df_genes, genes, score_col='score', subject_col='subject'):
+    def plot_original_expression(self, df_genes, genes, score_col='score', subject_col='subject', ylim=None):
         fig, ax = plt.subplots(1, len(genes), figsize=(5*len(genes), 5))
+        # Get colors from a colormap that can handle many distinct colors
+        subjects = sorted(df_genes[subject_col].unique())  # Sort subjects for consistent ordering
+        colors = plt.cm.tab20(np.linspace(0, 1, len(subjects)))  # Use tab20 colormap
+        
+        # Create handles and labels for legend
+        handles = []
+        labels = []
+        
         for i in range(len(genes)):
-            for subject in df_genes[subject_col].unique():
+            for j, subject in enumerate(subjects):
                 mask = df_genes[subject_col] == subject
-                ax[i].scatter(
+                scatter = ax[i].scatter(
                     df_genes.loc[mask, score_col],
                     df_genes.loc[mask, genes[i]],
                     s=0.1,
-                    label=subject
+                    color=colors[j],
+                    label=subject if i == 0 else None  # Only add label for first subplot
                 )
-            ax[i].legend()
-            ax[i].set_title(genes[i])
+                if i == 0:  # Only collect handles and labels once
+                    # Create a new scatter plot with larger points for the legend
+                    legend_scatter = ax[i].scatter([], [], s=100, color=colors[j])
+                    handles.append(legend_scatter)
+                    labels.append(subject)
+            
+            ax[i].set_title(genes[i], fontsize=14)
+            ax[i].set_xticks([])
+            ax[i].set_yticks([])
+            if ylim is not None:
+                ax[i].set_ylim(ylim)
+        
+        # Add legend to the right of the figure
+        fig.legend(handles, labels, title="Subjects", 
+                  loc='center right', bbox_to_anchor=(1.02, 0.5))
+        
+        # Adjust layout to make room for the legend
+        plt.tight_layout(rect=[0, 0, 0.9, 1])
         plt.show()
 
     def plot_interpolated_expression(self, genes):
@@ -144,34 +177,35 @@ class scDeBussy:
         gene_indices = [self.all_genes.index(gene) for gene in genes]
         fig, ax = plt.subplots(1, len(genes), figsize=(5 * len(genes), 5))
         
-        # Generate unique colors for each subject
-        num_subjects = self.subject_arrays.shape[0]
-        colors = plt.cm.tab10(np.linspace(0, 1, num_subjects))  # Use a colormap (e.g., tab10)
+        # Use the same colormap as plot_original_expression
+        subjects = sorted(self.subjects)  # Sort subjects for consistent ordering
+        colors = plt.cm.tab20(np.linspace(0, 1, len(subjects)))  # Use tab20 colormap
         
-        # Collect handles and labels for the legend
+        # Create handles and labels for legend
         handles = []
         labels = []
         
         for i, gene_idx in enumerate(gene_indices):
-            for j in range(num_subjects):
+            for j, subject in enumerate(subjects):
+                # Find the index of this subject in the original order
+                subject_idx = list(self.subjects).index(subject)
                 # Plot each subject's data with its assigned color
-                line, = ax[i].plot(self.traj_val_new_pts, self.subject_arrays[j][:, gene_idx], 
-                                color=colors[j], label=f'Subject {j}')
-                
-                # Collect one handle-label pair per subject (only once)
-                if i == 0:  # Only collect on the first subplot to avoid duplicates
-                    handles.append(line)
-                    labels.append(f'Subject {j}')
+                line = ax[i].plot(self.traj_val_new_pts, self.subject_arrays[subject_idx][:, gene_idx], 
+                          color=colors[j])
+                if i == 0:  # Only collect handles and labels once
+                    handles.append(line[0])
+                    labels.append(subject)
             
-            ax[i].set_title(genes[i])
-            ax[i].set_xlabel('Pseudotime')
-            ax[i].set_ylabel('Expression Level')
+            ax[i].set_title(genes[i], fontsize=14)
+            ax[i].set_xticks([])
+            ax[i].set_yticks([])
         
-        # Add a single legend to the right of all subplots
-        fig.legend(handles, labels, title="Subjects", loc='center right', bbox_to_anchor=(1.02, 0.5))
+        # Add legend to the right of the figure
+        fig.legend(handles, labels, title="Subjects", 
+                  loc='center right', bbox_to_anchor=(1.02, 0.5))
         
         # Adjust layout to make room for the legend
-        plt.tight_layout(rect=[0, 0, 0.9, 1])  # Leave space on the right for the legend
+        plt.tight_layout(rect=[0, 0, 0.9, 1])
         plt.show()
 
     def plot_barycenter_comparison(self, genes):
@@ -354,6 +388,81 @@ class scDeBussy:
         plt.tight_layout()
         plt.show()
 
+    def plot_combined_expression(self, df_genes, genes, score_col='score', subject_col='subject', ylim=None):
+        """
+        Plot both original and interpolated expression levels for each gene and subject.
+        Each subplot shows one subject's data, with original points and interpolated line.
+        
+        Parameters:
+            df_genes (pd.DataFrame): DataFrame containing the original expression data
+            genes (list): List of genes to plot
+            score_col (str): Column name for pseudotime/trajectory scores
+            subject_col (str): Column name for subject identifiers
+            ylim (tuple, optional): Y-axis limits for all plots
+        """
+        # Get colors from a colormap that can handle many distinct colors
+        subjects = sorted(df_genes[subject_col].unique())
+        colors = plt.cm.tab20(np.linspace(0, 1, len(subjects)))
+        
+        # Create subplots: one row per gene, one column per subject
+        fig, axes = plt.subplots(len(genes), len(subjects), 
+                                figsize=(4*len(subjects), 4*len(genes)))
+        
+        # Ensure axes is 2D even with single gene/subject
+        if len(genes) == 1:
+            axes = axes.reshape(1, -1)
+        if len(subjects) == 1:
+            axes = axes.reshape(-1, 1)
+        
+        # Plot for each gene and subject
+        for i, gene in enumerate(genes):
+            for j, subject in enumerate(subjects):
+                ax = axes[i, j]
+                
+                # Plot original data points
+                mask = df_genes[subject_col] == subject
+                ax.scatter(
+                    df_genes.loc[mask, score_col],
+                    df_genes.loc[mask, gene],
+                    s=10,  # Slightly larger points for better visibility
+                    color=colors[j],
+                    alpha=0.5,
+                    label='Original'
+                )
+                
+                # Plot interpolated line
+                subject_idx = list(self.subjects).index(subject)
+                gene_idx = self.all_genes.index(gene)
+                ax.plot(
+                    self.traj_val_new_pts,
+                    self.subject_arrays[subject_idx][:, gene_idx],
+                    color=colors[j],
+                    linewidth=2,
+                    label='Interpolated'
+                )
+                
+                # Customize subplot
+                if i == 0:  # Only add subject label to top row
+                    ax.set_title(f'{subject}', fontsize=30)
+                if j == 0:  # Only add gene label to leftmost column
+                    ax.set_ylabel(gene, fontsize=30)
+                
+                # Remove ticks for cleaner look
+                ax.set_xticks([])
+                ax.set_yticks([])
+                
+                # Set y-axis limits if provided
+                if ylim is not None:
+                    ax.set_ylim(ylim)
+                
+                # Add legend only to the first subplot
+                if i == 0 and j == 0:
+                    ax.legend(fontsize=8, loc='upper right')
+        
+        # Adjust layout
+        plt.tight_layout()
+        plt.show()
+
 if __name__ == "__main__":
     # Test the class on minimal example
     df = pd.read_csv("/scratch/chanj3/wangm10/NSCLC_SCLC-A_SCLC-N.csv", index_col=0)
@@ -364,22 +473,24 @@ if __name__ == "__main__":
                             delimiter='\t')
     genes = benchmark_genes #hvg_genes.iloc[:,0].values.tolist()
 
-    # Initialize analyzer
-    analyzer = scDeBussy(win_sz=0.1, num_pts=20, gamma=1)
+    # Initialize analyzer with larger window size and more points
+    analyzer = scDeBussy(win_sz=0.1, num_pts=50, gamma=1)
 
     # Plot original expression
     df_subset = df.loc[:, ["subject", "score"] + genes]
-    analyzer.plot_original_expression(df_subset, benchmark_genes)
+    analyzer.plot_original_expression(df_subset, benchmark_genes, ylim=(0, 6))
 
     # Prepare data and compute barycenter
     analyzer.prepare_data(df_subset, genes)
-    analyzer.compute_barycenter(method='soft_dtw')
-
     # Plot interpolated expression and barycenter
     analyzer.plot_interpolated_expression(benchmark_genes)
+    analyzer.plot_combined_expression(df_subset, benchmark_genes, ylim=(0, 6))
 
+    analyzer.compute_barycenter(method='soft_dtw')
     analyzer.map_pseudotime_to_barycenter()
     analyzer.plot_barycenter_comparison(benchmark_genes)
 
     analyzer.compute_sample_distances_to_barycenter()
     analyzer.plot_distance_matrix(benchmark_genes)
+
+   

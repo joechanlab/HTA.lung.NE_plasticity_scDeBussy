@@ -214,7 +214,144 @@ def compute_weights_from_barycenter(X, gamma=1.0, be=None, gap_penalty=1.0, max_
     
     return weights, barycenter
 
-def softdtw_barycenter_with_gaps(X, gamma=1.0, gap_penalties="auto", weights=None, method="L-BFGS-B", 
+class ReliableSquaredEuclidean:
+    """Distance metric that ignores unreliable genes, fully compatible with your DTW functions"""
+    def __init__(self, unreliable_masks):
+        self.unreliable_masks = unreliable_masks
+        self.Z = None
+        self.X_i = None
+    
+    def __call__(self, Z, X_i):
+        """
+        Store the input matrices and return self for chaining.
+        Matches the interface expected by your DTW functions.
+        """
+        self.Z = Z
+        self.X_i = X_i
+        return self
+    
+    def compute(self):
+        """
+        Compute the distance matrix while ignoring unreliable genes.
+        """
+        if self.Z is None or self.X_i is None:
+            raise ValueError("Input matrices not set. Call the distance object first.")
+        
+        # Find which sample this is (by comparing to our masks)
+        sample_idx = self._find_sample_index(self.X_i)
+        mask = self.unreliable_masks[sample_idx] if sample_idx is not None else None
+        
+        # Create masked versions
+        Z_masked = self.Z.copy()
+        X_masked = self.X_i.copy()
+        if mask is not None:
+            Z_masked[:, mask] = 0
+            X_masked[:, mask] = 0
+        
+        # Compute squared Euclidean distance
+        D = np.zeros((Z_masked.shape[0], X_masked.shape[0]))
+        for i in range(Z_masked.shape[0]):
+            for j in range(X_masked.shape[0]):
+                diff = Z_masked[i] - X_masked[j]
+                D[i,j] = np.sum(diff**2)
+        
+        # Scale by fraction of reliable genes
+        if mask is not None:
+            n_genes = Z_masked.shape[1]
+            n_reliable = np.sum(~mask)
+            if n_reliable > 0:
+                D *= (n_genes / n_reliable)
+        
+        return D
+    
+    def _find_sample_index(self, X_i):
+        """Helper to find which sample this is in our dataset"""
+        # Compare shape and first few values to identify the sample
+        for idx, mask in enumerate(self.unreliable_masks):
+            if X_i.shape[1] == len(mask):  # Compare number of genes
+                return idx
+        return None
+
+def reliable_softdtw_barycenter(X, gamma=1.0, gap_penalties="auto", 
+                               variance_threshold=0.01, min_expression=0.01,
+                               **kwargs):
+    """
+    Compute barycenter using only reliable genes.
+    Fully compatible with your existing functions.
+    
+    Args:
+        X: Input time series (samples × timepoints × genes)
+        gamma: Soft-DTW regularization parameter
+        gap_penalties: Gap penalty specification
+        variance_threshold: Minimum gene variance threshold
+        min_expression: Minimum mean expression threshold
+        **kwargs: Additional arguments for softdtw_barycenter_with_gaps
+        
+    Returns:
+        barycenter: Computed barycenter
+        alignments: Alignment paths
+        reliable_counts: Number of reliable genes per sample
+    """
+    # Detect unreliable genes
+    X = to_time_series_dataset(X)
+    unreliable_masks = detect_unreliable_genes(X, variance_threshold, min_expression)
+    reliable_counts = [np.sum(~mask) for mask in unreliable_masks]
+    
+    # Create distance metric instance
+    distance_metric = ReliableSquaredEuclidean(unreliable_masks)
+    
+    # Compute barycenter using your existing function
+    barycenter, alignments = softdtw_barycenter_with_gaps(
+        X, 
+        gamma=gamma,
+        gap_penalties=gap_penalties,
+        distance=distance_metric,  # Pass our modified distance metric
+        **kwargs
+    )
+    
+    return barycenter, alignments, unreliable_masks, reliable_counts
+
+def detect_unreliable_genes(X, variance_threshold=0.01, min_expression=0.01, relative_var_threshold=0.01):
+    """
+    Identify genes that are poorly correlated with others in each sample.
+    
+    Parameters:
+        X: numpy array of shape (n_samples, n_timepoints, n_genes)
+        variance_threshold: Minimum variance to consider a gene reliable
+        min_expression: Minimum mean expression to consider a gene potentially reliable
+        
+    Returns:
+        List of boolean masks (one per sample) indicating unreliable genes (True = unreliable)
+    """
+    X = np.asarray(X, dtype=np.float64)
+    unreliable_masks = []
+    
+    for sample in X:
+        with np.errstate(invalid='ignore'):
+            mean_expr = np.nanmean(sample, axis=0)
+            variance = np.nanvar(sample, axis=0)
+            
+            # Calculate relative variance (variance/mean)
+            relative_var = np.zeros_like(variance)
+            non_zero = mean_expr > 0
+            relative_var[non_zero] = variance[non_zero] / mean_expr[non_zero]
+            
+            low_expr = (mean_expr < min_expression) | np.isnan(mean_expr)
+            low_var = (variance < variance_threshold) | np.isnan(variance)
+            low_rel_var = (relative_var < relative_var_threshold)  # Additional threshold
+            
+            # Combine criteria with OR
+            unreliable = low_expr | low_var | low_rel_var
+            
+            # Ensure we keep at least some genes
+            if np.all(unreliable):
+                unreliable = low_expr  # Fall back to just expression threshold
+        
+        unreliable_masks.append(unreliable)
+    
+    return unreliable_masks
+
+def softdtw_barycenter_with_gaps(X, gamma=1.0, gap_penalties="auto", weights=None, distance=SquaredEuclidean, method="L-BFGS-B", 
                                 tol=1e-3, max_iter=50, init=None, verbose=False):
     """Compute barycenter (time series averaging) under the soft-DTW with gaps geometry.
 
@@ -272,7 +409,7 @@ def softdtw_barycenter_with_gaps(X, gamma=1.0, gap_penalties="auto", weights=Non
         X_ = [to_time_series(d, remove_nans=True) for d in X_]
 
         def f(Z):
-            obj, grad, paths = _softdtw_func_with_gaps(Z, X_, weights, barycenter, gamma, gap_penalties, verbose=verbose)
+            obj, grad, paths = _softdtw_func_with_gaps(Z, X_, weights, barycenter, gamma, gap_penalties, distance, verbose=verbose)
             alignment_maps.append(paths)
             return obj, grad
 
@@ -289,7 +426,7 @@ def softdtw_barycenter_with_gaps(X, gamma=1.0, gap_penalties="auto", weights=Non
             plot_alignment_path(P)
     return final_barycenter, final_alignments
 
-def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, verbose=False):
+def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, distance, verbose=False):
     """Compute objective value and gradient for soft-DTW with gaps barycenter."""
     Z = Z.reshape(barycenter.shape)
     G = np.zeros_like(Z)
@@ -302,7 +439,7 @@ def _softdtw_func_with_gaps(Z, X, weights, barycenter, gamma, gap_penalties, ver
         X_clean = np.nan_to_num(X[i], nan=0.0, posinf=1e10, neginf=-1e10)
         gap_open = gap_penalties[i] if gap_penalties is not None else 1.0
         gap_extend = gap_open * 0.8
-        D = SquaredEuclidean(Z_clean, X_clean).compute()
+        D = distance(Z_clean, X_clean).compute()
         m, n = D.shape
         if verbose:
             print("Distance Matrix D: ")
@@ -481,19 +618,18 @@ def extract_mappings(alignment_maps, X, barycenter):
                 ts_indices.append(None)
                 j -= 1
             else:
-                # Use probabilities to choose the most likely operation
                 probs = P[j][k]
-                op = np.argmax(probs)
-                if op == 0:  # Match
+                # Use probability-weighted path selection
+                if probs[0] > 0.6:  # Strong match preference
                     bary_indices.append(j-1)
                     ts_indices.append(k-1)
                     j -= 1
                     k -= 1
-                elif op == 1:  # Delete
+                elif probs[1] > probs[2]:  # Prefer deletion
                     bary_indices.append(j-1)
                     ts_indices.append(None)
                     j -= 1
-                else:  # Insert
+                else:  # Prefer insertion
                     bary_indices.append(None)
                     ts_indices.append(k-1)
                     k -= 1
@@ -503,41 +639,110 @@ def extract_mappings(alignment_maps, X, barycenter):
     
     return mappings
 
-def detect_unreliable_genes_variance(X, variance_threshold=0.01, min_expression_level=0.01):
-    """
-    Identify genes with low expression variance in each sample.
+def extract_mappings_mask(alignment_maps, X, barycenter, unreliable_masks):
+    """Convert probability matrices (P) into gene-first alignment mappings.
     
-    Parameters:
-        X: numpy array of shape (n_samples, n_timepoints, n_genes)
-        variance_threshold: Minimum variance to consider a gene reliable
-        min_expression_level: Minimum mean expression to consider a gene potentially reliable
+    Args:
+        alignment_maps: List of path probability matrices from soft-DTW
+        X: Original time series data (n_samples × n_timepoints × n_genes)
+        barycenter: Computed barycenter (n_timepoints × n_genes)
+        unreliable_masks: List of boolean masks (True=unreliable) per sample
         
     Returns:
-        List of boolean masks (one per sample) where True indicates unreliable genes
+        dict containing:
+            - 'by_gene': {
+                  gene_index: [
+                      (sample_0_bary_indices, sample_0_ts_indices),
+                      (sample_1_bary_indices, sample_1_ts_indices),
+                      ...
+                  ]
+              }
+            - 'reliability': ndarray (n_samples × n_genes)
     """
-    # Convert input to numpy array of floats
-    X = np.asarray(X, dtype=np.float64)
+    n_samples = len(X)
+    n_genes = len(X[0][0])
+    bary_len = len(barycenter)
     
-    n_samples, n_timepoints, n_genes = X.shape
-    unreliable_masks = []
+    # Initialize output structure
+    by_gene = {g: [] for g in range(n_genes)}
+    reliability = np.zeros((n_samples, n_genes))
     
-    for sample_idx in range(n_samples):
-        sample_data = X[sample_idx]  # Get (timepoints × genes) for this sample
+    for sample_idx, P in enumerate(alignment_maps):
+        ts = np.asarray(X[sample_idx])
+        ts_len = len(ts)
+        mask = unreliable_masks[sample_idx]
         
-        # Calculate mean expression and variance
-        with np.errstate(invalid='ignore'):
-            mean_expression = np.nanmean(sample_data, axis=0)
-            variance = np.nanvar(sample_data, axis=0)
-        
-        # Identify genes with low expression or low variance
-        low_expression_mask = np.isnan(mean_expression) | (mean_expression < min_expression_level)
-        low_variance_mask = np.isnan(variance) | (variance < variance_threshold)
-        
-        # Combine masks - gene is unreliable if either condition is true
-        combined_mask = low_expression_mask | low_variance_mask
-        unreliable_masks.append(combined_mask)
+        for gene_idx in range(n_genes):
+            if mask[gene_idx]:  # Unreliable gene - all gaps
+                dummy_length = max(bary_len, ts_len)
+                by_gene[gene_idx].append((
+                    [None]*dummy_length,
+                    [None]*dummy_length
+                ))
+                reliability[sample_idx, gene_idx] = 0
+            else:  # Reliable gene
+                bary_indices, ts_indices = [], []
+                j, k = bary_len, ts_len
+                scores = []
+                
+                while j > 0 or k > 0:
+                    if j == 0:  # Insertion
+                        ts_indices.append(k-1)
+                        bary_indices.append(None)
+                        k -= 1
+                    elif k == 0:  # Deletion
+                        bary_indices.append(j-1)
+                        ts_indices.append(None)
+                        j -= 1
+                    else:
+                        probs = P[j][k]
+                        op = np.argmax(probs)
+                        
+                        if op == 0:  # Match
+                            score = (barycenter[j-1,gene_idx] * 
+                                   ts[k-1,gene_idx] * 
+                                   probs[0])
+                            bary_indices.append(j-1)
+                            ts_indices.append(k-1)
+                            scores.append(score)
+                            j -= 1
+                            k -= 1
+                        elif op == 1:  # Deletion
+                            bary_indices.append(j-1)
+                            ts_indices.append(None)
+                            scores.append(0)
+                            j -= 1
+                        else:  # Insertion
+                            bary_indices.append(None)
+                            ts_indices.append(k-1)
+                            scores.append(0)
+                            k -= 1
+                
+                # Store reversed alignment
+                by_gene[gene_idx].append((
+                    bary_indices[::-1],
+                    ts_indices[::-1]
+                ))
+                reliability[sample_idx, gene_idx] = (
+                    np.sum(scores) / (len(scores) + 1e-8)
+                )
     
-    return unreliable_masks
+    return {
+        'by_gene': by_gene,
+        'reliability': reliability
+    }
+
+def _create_global_alignment(gene_alignments, mask):
+    """Create consensus global alignment from gene-level alignments."""
+    # Get first reliable gene's alignment as template
+    reliable_genes = [g for g in gene_alignments if not mask[g]]
+    if not reliable_genes:
+        return ([], [])  # No reliable genes
+    
+    template_gene = reliable_genes[0]
+    bary_template, ts_template = gene_alignments[template_gene]
+    
+    return (bary_template, ts_template)
 
 def extract_gene_specific_alignments(mappings, unreliable_masks, X):
     """
