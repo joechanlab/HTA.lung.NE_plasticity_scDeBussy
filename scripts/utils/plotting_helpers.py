@@ -9,10 +9,31 @@ from scipy.spatial.distance import pdist
 import numpy as np
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.patheffects as path_effects
+
+standard_class_palette = {
+    "Adhesion by Cadherin": "#1f77b4",  # blue
+    "Adhesion by CADM": "#1f77b4",      # same category
+    "Signaling by Amyloid-beta precursor protein": "#ff7f0e",  # orange
+    "Signaling by Ephrin": "#ffbb78",  # light orange
+    "Signaling by Chemokines": "#d62728",  # red
+    "Signaling by Fibroblast growth factor": "#c49c94",  # light brown
+    "Signaling by Insulin-like growth factor": "#2ca02c",  # green
+    "Signaling by Growth arrest": "#98df8a",  # light green
+    "Signaling by Neuromedin": "#8c564b",  # brown
+    "Signaling by Notch": "#9467bd",  # purple
+    "Signaling by Placenta growth factor": "#c5b0d5",  # light purple
+    "Signaling by Podocalyxin-like protein": "#17becf",  # cyan
+    "Signaling by Semaphorin": "#e377c2",  # pink
+    "Signaling by Transforming growth factor": "#7f7f7f",  # gray
+    "Signaling by Tumor necrosis factor": "#bcbd22",  # mustard
+    "Signaling by Vascular endothelial growth factor": "#aec7e8",  # light blue
+    "Signaling by WNT": "#f7b6d2",  # rose pink
+}
 
 def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
                               row_order=None, pval_threshold=None, 
-                              facet_by=None, facet_order=None):
+                              facet_by=None, facet_order=None, show_TF_names=True):
     
 
     if pval_threshold is not None:
@@ -22,9 +43,10 @@ def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png'
     top_interactions[['sender', 'receiver']] = top_interactions['sender_receiver_pair'].str.split('→', expand=True)
     classification_map = top_interactions.set_index('interacting_pair')['classification'].to_dict()
     unique_classes = sorted(set(classification_map.values()))
-    distinct_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-                       '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-    class_to_color = {cls: distinct_colors[i % len(distinct_colors)] for i, cls in enumerate(unique_classes)}
+    class_to_color = {cls: standard_class_palette.get(cls, 'gray') for cls in unique_classes}
+    missing_classes = [cls for cls in unique_classes if cls not in standard_class_palette]
+    if missing_classes:
+        print("Warning: missing colors for classifications:", missing_classes)
     
     if facet_by in ['sender', 'receiver']:
         grouped = dict(tuple(top_interactions.groupby(facet_by)))
@@ -68,7 +90,10 @@ def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png'
             index='interacting_pair',
             columns='facet_column',
             values='active_TFs',
-            aggfunc=lambda x: ';'.join(set(filter(None, x))) if any(x) else '',
+            aggfunc=lambda x: (
+                ';'.join(set(filter(None, x))) if show_TF_names and any(x.dropna().astype(str).str.strip())
+                else ('●' if any(x.dropna().astype(str).str.strip()) else '')
+            ),
             fill_value=''
         )
 
@@ -82,7 +107,7 @@ def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png'
             ax=ax,
             annot=tf_annot_matrix,
             fmt='',
-            annot_kws={'color': 'black', 'weight': 'bold', 'size': 10, 'rotation': 0},
+            annot_kws={'color': 'black', 'weight': 'bold', 'size': 8, 'rotation': 0, 'path_effects': [path_effects.withStroke(linewidth=3, foreground='white')]},
             cbar=False,  # 🔁 No individual colorbars
             mask=heatmap_data == 0,
             yticklabels=True if i == 0 else False
@@ -100,10 +125,11 @@ def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png'
                 cls = classification_map.get(label.get_text(), 'Unclassified')
                 label.set_color(class_to_color.get(cls, 'black'))
         ax.tick_params(axis='y', length=0)
-        ax.set_title(f"{facet_val}", fontsize=14)
+        ax.set_title(f"{facet_val}", fontsize=20)
         ax.set_xlabel("")
         ax.set_ylabel("")
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=10)
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=15)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=20)
 
     # Shared colorbar appended to last facet
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
@@ -114,19 +140,32 @@ def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png'
     fig.colorbar(sm, cax=cax, label='Frequency Difference\n(ADC → SCLC - De novo)')
 
     # Legend
-    legend_elements = [
+    classification_elements = [
         plt.Line2D([0], [0], color=color, label=cls, marker='s', linestyle='None', markersize=10)
         for cls, color in class_to_color.items()
     ]
-    fig.legend(handles=legend_elements, title='Classification', bbox_to_anchor=(1.01, 1), loc='upper left')
+    
+    # Add circle legend element if show_TF_names is False
+    if not show_TF_names:
+        circle_element = plt.Line2D([0], [0], marker='o', color='black', label='Direct TF activated',
+                      markerfacecolor='black', markersize=8, linestyle='None')
+        # Create two separate legends
+        fig.legend(handles=classification_elements, title='Classification', 
+                  bbox_to_anchor=(1.01, 1), loc='upper left')
+        # Place circle legend at the bottom right
+        fig.legend(handles=[circle_element], title='TF Activation',
+                  bbox_to_anchor=(0.99, 0.01), loc='lower right')
+    else:
+        fig.legend(handles=classification_elements, title='Classification', 
+                  bbox_to_anchor=(1.01, 1), loc='upper left')
 
     # Axis titles
-    fig.text(0.5, 0.04, f"{'Receiver' if facet_by == 'sender' else 'Sender'}", ha='center', fontsize=14)
+    fig.text(0.5, 0.04, f"{'Receiver' if facet_by == 'sender' else 'Sender'}", ha='center', fontsize=20)
     
     # Align facet label above y axis
     renderer = fig.canvas.get_renderer()
     bbox = axs[0].get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
-    fig.text(bbox.x0, 0.96, f"{facet_by.capitalize()}:", ha='left', fontsize=15)
+    fig.text(bbox.x0, 0.96, f"{facet_by.capitalize()}:", ha='left', fontsize=20)
 
     fig.tight_layout(rect=[0, 0.06, 0.9, 0.95])
     fig.savefig(output_file, dpi=300, bbox_inches='tight')
@@ -437,3 +476,35 @@ def plot_rank_histograms(liana_df, figsize=(12, 5), save_path=None):
     else:
         plt.show()
     plt.close()
+
+def create_tf_activation_legend(output_file='tf_activation_legend.png'):
+    """
+    Create and save a standalone legend for TF activation circle symbol.
+    
+    Parameters:
+    -----------
+    output_file : str
+        Path where to save the legend image
+    """
+    # Create a small figure
+    fig = plt.figure(figsize=(2, 1))
+    ax = fig.add_subplot(111)
+    
+    # Create the circle legend element
+    circle_element = plt.Line2D([0], [0], marker='o', color='black', 
+                               label='Direct TF activated',
+                               markerfacecolor='black', markersize=8, 
+                               linestyle='None')
+    
+    # Add legend
+    ax.legend(handles=[circle_element], title='TF Activation',
+             loc='center', frameon=True)
+    
+    # Remove axes
+    ax.set_axis_off()
+    
+    # Save the figure
+    plt.savefig(output_file, dpi=300, bbox_inches='tight', pad_inches=0.1)
+    plt.close()
+    
+    print(f"TF activation legend saved to {output_file}")
