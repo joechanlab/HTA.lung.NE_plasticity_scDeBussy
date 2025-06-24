@@ -12,34 +12,31 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.patheffects as path_effects
 
 standard_class_palette = {
-    "Adhesion by Cadherin": "#1f77b4",  # blue
-    "Adhesion by CADM": "#1f77b4",      # same category
-    "Signaling by Amyloid-beta precursor protein": "#ff7f0e",  # orange
-    "Signaling by Ephrin": "#ffbb78",  # light orange
-    "Signaling by Chemokines": "#d62728",  # red
-    "Signaling by Fibroblast growth factor": "#c49c94",  # light brown
-    "Signaling by Insulin-like growth factor": "#2ca02c",  # green
-    "Signaling by Growth arrest": "#98df8a",  # light green
-    "Signaling by Neuromedin": "#8c564b",  # brown
-    "Signaling by Notch": "#9467bd",  # purple
-    "Signaling by Placenta growth factor": "#c5b0d5",  # light purple
-    "Signaling by Podocalyxin-like protein": "#17becf",  # cyan
-    "Signaling by Semaphorin": "#e377c2",  # pink
-    "Signaling by Transforming growth factor": "#7f7f7f",  # gray
-    "Signaling by Tumor necrosis factor": "#bcbd22",  # mustard
-    "Signaling by Vascular endothelial growth factor": "#aec7e8",  # light blue
-    "Signaling by WNT": "#f7b6d2",  # rose pink
+    "Signaling by WNT": "#f7b6d2",  # reuse rose pink from old
+    "Signaling by Reelin": "#17becf",  # cyan (was Podocalyxin-like protein, now re-used)
+    "Signaling by Ephrin": "#ffbb78",  # reuse light orange
+    "Signaling by Transferrin": "#8c564b",  # brown (reused Neuromedin)
+    "Signaling by Fibroblast growth factor": "#c49c94",  # reuse light brown
+    "Signaling by Pleiotrophin": "#e377c2",  # reuse pink (was Semaphorin)
+    "Signaling by Somatostatin": "#d62728",  # reuse red (was Chemokines)
+    "Signaling by Apolipoprotein": "#17a2b8",  # teal (new)
+    "Signaling by Insulin-like growth factor": "#2ca02c",  # reuse green
+    "Signaling by Notch": "#9467bd",  # reuse purple
+    "Signaling by Placenta growth factor": "#c5b0d5",  # reuse light purple
+    "Adhesion by Cadherin": "#1f77b4",  # reuse blue
+    "Signaling by Transforming growth factor": "#7f7f7f",  # reuse gray
+    "Signaling by Tumor necrosis factor": "#bcbd22",  # reuse mustard
 }
 
-def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
-                              row_order=None, pval_threshold=None, 
+def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
+                              row_order=None, pval_threshold=None, pval_column='fisher_pval',
                               facet_by=None, facet_order=None, show_TF_names=True):
-    
-
     if pval_threshold is not None:
-        type_summary = type_summary[type_summary['fisher_pval'] < pval_threshold].copy()
-
-    top_interactions = type_summary.head(top_n).copy()
+        type_summary = type_summary[type_summary[pval_column] < pval_threshold].copy()
+    type_summary = type_summary.sort_values(pval_column)
+    top_interactions = type_summary.drop_duplicates('interacting_pair').head(top_n).copy()
+    if row_order is not None:
+        top_interactions = top_interactions.loc[top_interactions['interacting_pair'].isin(row_order)]
     top_interactions[['sender', 'receiver']] = top_interactions['sender_receiver_pair'].str.split('→', expand=True)
     classification_map = top_interactions.set_index('interacting_pair')['classification'].to_dict()
     unique_classes = sorted(set(classification_map.values()))
@@ -168,10 +165,11 @@ def plot_interaction_heatmap(type_summary, output_file='interaction_heatmap.png'
     fig.text(bbox.x0, 0.96, f"{facet_by.capitalize()}:", ha='left', fontsize=20)
 
     fig.tight_layout(rect=[0, 0.06, 0.9, 0.95])
-    fig.savefig(output_file, dpi=300, bbox_inches='tight')
-    plt.close()
+    if output_file is not None:
+        fig.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"Faceted heatmap saved to {output_file}")
+        plt.close()
 
-    print(f"Faceted heatmap saved to {output_file}")
 
 def plot_lr_validation(adata, ligands, receptors, senders, receivers, cell_type_col='cell_type_fine', save_file=None):
     """
