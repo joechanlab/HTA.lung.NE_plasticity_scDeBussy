@@ -11,29 +11,12 @@ import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.patheffects as path_effects
 
-standard_class_palette = {
-    "Signaling by WNT": "#f7b6d2",  # reuse rose pink from old
-    "Signaling by Reelin": "#17becf",  # cyan (was Podocalyxin-like protein, now re-used)
-    "Signaling by Ephrin": "#ffbb78",  # reuse light orange
-    "Signaling by Transferrin": "#8c564b",  # brown (reused Neuromedin)
-    "Signaling by Fibroblast growth factor": "#c49c94",  # reuse light brown
-    "Signaling by Pleiotrophin": "#e377c2",  # reuse pink (was Semaphorin)
-    "Signaling by Somatostatin": "#d62728",  # reuse red (was Chemokines)
-    "Signaling by Apolipoprotein": "#17a2b8",  # teal (new)
-    "Signaling by Insulin-like growth factor": "#2ca02c",  # reuse green
-    "Signaling by Notch": "#9467bd",  # reuse purple
-    "Signaling by Placenta growth factor": "#c5b0d5",  # reuse light purple
-    "Adhesion by Cadherin": "#1f77b4",  # reuse blue
-    "Signaling by Transforming growth factor": "#7f7f7f",  # reuse gray
-    "Signaling by Tumor necrosis factor": "#bcbd22",  # reuse mustard
-}
-
 def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
                               row_order=None, pval_threshold=None, pval_column='fisher_pval',
-                              facet_by=None, facet_order=None, show_TF_names=True, mean_diff_column='mean_diff'):
+                              facet_by=None, facet_order=None, show_TF_names=True, ranking_diff_column='mean_diff', viz_diff_column='mean_diff'):
     if pval_threshold is not None:
         type_summary = type_summary[type_summary[pval_column] < pval_threshold].copy()
-    type_summary = type_summary.sort_values(pval_column)
+    type_summary = type_summary.sort_values(ranking_diff_column, key=np.abs, ascending=False)
     top_interactions = type_summary.drop_duplicates('interacting_pair').head(top_n).copy()
     if row_order is not None:
         top_interactions = top_interactions.loc[top_interactions['interacting_pair'].isin(row_order)]
@@ -82,7 +65,7 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
         opposite = 'receiver' if facet_by == 'sender' else 'sender'
         group['facet_column'] = group[opposite]
 
-        heatmap_data = group.pivot(index='interacting_pair', columns='facet_column', values=mean_diff_column).fillna(0)
+        heatmap_data = group.pivot(index='interacting_pair', columns='facet_column', values=viz_diff_column).fillna(0)
         tf_annot_matrix = group.pivot_table(
             index='interacting_pair',
             columns='facet_column',
@@ -132,8 +115,11 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
     divider = make_axes_locatable(axs[-1])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     sm = plt.cm.ScalarMappable(cmap='RdBu_r')
-    sm.set_array([-3, 3])  # Dummy range, just for colorbar scale
-    fig.colorbar(sm, cax=cax, label='-log10(rho) Mean Difference\n(De novo - ADC)')
+    sm.set_array([-1, 1])  # Dummy range, just for colorbar scale
+    if viz_diff_column == 'freq_diff':
+        fig.colorbar(sm, cax=cax, label='Frequency Difference\n(ADC - De novo)')
+    else:
+        fig.colorbar(sm, cax=cax, label='Mean Score Difference\n(ADC - De novo)')
 
     # Legend
     classification_elements = [

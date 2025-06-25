@@ -97,8 +97,7 @@ def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_pe
         # Compute mean difference directly
         mean_adc = group[group['condition'] == 'ADC → SCLC']['transformed_score'].mean()
         mean_de_novo = group[group['condition'] == 'De novo SCLC and ADC']['transformed_score'].mean()
-        mean_diff = mean_de_novo - mean_adc 
-        # directionality: Positive → enriched in transformed
+        mean_diff = mean_adc - mean_de_novo
 
         for col in ['condition', 'tissue', 'chemo', 'IO', 'TKI']:
             if col == 'condition':
@@ -123,12 +122,51 @@ def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_pe
         'mean_diff': mean_diff
     }
 
+def compute_frequency_difference(subject_df, sample_groups, threshold_value=2.0):
+    """
+    Adds frequency difference column (analogous to old freq_diff) to summary dataframe.
+
+    Parameters:
+    - subject_df: aggregated subject-level dataframe (after aggregation step)
+    - sample_groups: dictionary of {condition: list of subject IDs}
+    - threshold_value: threshold on transformed_score to consider confident interaction
+
+    Returns:
+    - DataFrame with additional freq_diff column per (interacting_pair, sender_receiver_pair)
+    """
+
+    subject_df = subject_df.copy()
+    subject_df['is_confident'] = (subject_df['transformed_score'] >= threshold_value).astype(int)
+
+    results = []
+    grouped = subject_df.groupby(['interacting_pair', 'sender_receiver_pair'])
+    for (interacting_pair, sender_receiver_pair), group in grouped:
+        n_A = group[group['condition'] == 'De novo SCLC and ADC']['is_confident'].sum()
+        total_A = len(sample_groups['De novo SCLC and ADC'])
+        freq_A = n_A / total_A if total_A > 0 else np.nan
+
+        n_B = group[group['condition'] == 'ADC → SCLC']['is_confident'].sum()
+        total_B = len(sample_groups['ADC → SCLC'])
+        freq_B = n_B / total_B if total_B > 0 else np.nan
+
+        freq_diff = freq_B - freq_A
+
+        results.append({
+            'interacting_pair': interacting_pair,
+            'sender_receiver_pair': sender_receiver_pair,
+            'freq_A': freq_A,
+            'freq_B': freq_B,
+            'freq_diff': freq_diff
+        })
+
+    return pd.DataFrame(results)
+
 def summarize_lr_interactions(
     relevance_df,
     metadata_df,
     sample_groups,
     score_column='computed_specificity_rank',
-    sample_column='sample_name',
+    threshold_value=2.0,
     n_jobs=4,
     min_subjects_per_condition=3,
     min_total_subjects=6,
@@ -144,6 +182,7 @@ def summarize_lr_interactions(
     print(f"Input shape: {relevance_df.shape}")
 
     subject_df = aggregate_subjects(relevance_df, score_column)
+    frequency_df = compute_frequency_difference(subject_df, sample_groups, threshold_value=threshold_value)
     grouped = subject_df.groupby(['interacting_pair', 'sender_receiver_pair'])
     
     results = Parallel(n_jobs=n_jobs)(
@@ -159,7 +198,11 @@ def summarize_lr_interactions(
             summary_df.loc[mask, 'glmm_pval'], method='bh'
         )
         summary_df.loc[mask, 'glmm_fdr'] = qvals
-
+    summary_df = summary_df.merge(
+        frequency_df,
+        on=['interacting_pair', 'sender_receiver_pair'],
+        how='left'
+    )
     return summary_df
 
 # --------------------------------
@@ -174,14 +217,15 @@ metadata_df = metadata_df.loc[:, [
     'sample', 'subject', 'tissue', 'chemo', 'IO', 'TKI']]
 
 min_subjects_per_condition=2
-min_total_subjects=10
+min_total_subjects=8
 min_variance=1e-3
+threshold_value=-np.log10(0.2)
 
 summary = summarize_lr_interactions(
     liana_df,
     metadata_df,
     sample_groups,
-    sample_column='sample',
+    threshold_value=threshold_value,
     min_subjects_per_condition=min_subjects_per_condition,
     min_total_subjects=min_total_subjects,
     min_variance=min_variance
@@ -211,8 +255,8 @@ summary.to_csv(
 
 #--------------------------------
 # plot within tumor interactions
-top_n = 30
-glmm_fdr_threshold = 0.05
+top_n = 20
+glmm_fdr_threshold = 0.2
 summary = summary[summary['glmm_fdr'] < glmm_fdr_threshold]
 standard_class_palette = generate_class_palette(summary['classification'].unique())
 within_tumor_ordering = [
@@ -234,7 +278,8 @@ plot_interaction_heatmap(
     facet_order=within_tumor_ordering,
     show_TF_names=False,
     pval_column='glmm_fdr',
-    mean_diff_column='mean_diff'
+    ranking_diff_column='freq_diff',
+    viz_diff_column='freq_diff'
 )
 
 #--------------------------------
@@ -257,7 +302,8 @@ plot_interaction_heatmap(
     facet_order=tumor_immune_ordering,
     show_TF_names=False,
     pval_column='glmm_fdr',
-    mean_diff_column='mean_diff'
+    ranking_diff_column='freq_diff',
+    viz_diff_column='freq_diff'
 )
 plot_interaction_heatmap(
     type_summary,
@@ -271,7 +317,8 @@ plot_interaction_heatmap(
     facet_by='receiver',
     facet_order=tumor_immune_ordering,
     pval_column='glmm_fdr',
-    mean_diff_column='mean_diff'
+    ranking_diff_column='freq_diff',
+    viz_diff_column='freq_diff'
 )
 
 #--------------------------------
@@ -296,5 +343,7 @@ if len(type_summary) > 0:
         facet_by='sender',
         facet_order=tumor_stromal_ordering,
         show_TF_names=False,
-        pval_column='glmm_fdr'
+        pval_column='glmm_fdr',
+        ranking_diff_column='freq_diff',
+        viz_diff_column='mean_diff'
     )
