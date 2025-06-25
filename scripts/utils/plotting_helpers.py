@@ -17,7 +17,7 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
     if pval_threshold is not None:
         type_summary = type_summary[type_summary[pval_column] < pval_threshold].copy()
     type_summary = type_summary.sort_values(ranking_diff_column, key=np.abs, ascending=False)
-    top_interactions = type_summary.drop_duplicates('interacting_pair').head(top_n).copy()
+    top_interactions = type_summary['interacting_pair'].drop_duplicates().head(top_n).copy()
     if row_order is not None:
         top_interactions = top_interactions.loc[top_interactions['interacting_pair'].isin(row_order)]
     top_interactions[['sender', 'receiver']] = top_interactions['sender_receiver_pair'].str.split('→', expand=True)

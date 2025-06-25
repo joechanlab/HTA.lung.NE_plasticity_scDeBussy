@@ -205,58 +205,101 @@ def summarize_lr_interactions(
     )
     return summary_df
 
-# --------------------------------
-liana_df = pd.read_csv(
-    "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df.csv"
-)
-metadata_df = pd.read_csv(
-    '/data1/chanj3/HTA.lung.NE_plasticity.120122/ref/metadata_for_limma.csv'
-)
-metadata_df = metadata_df.rename(columns={'batch': 'sample', 'patient': 'subject'})
-metadata_df = metadata_df.loc[:, [
-    'sample', 'subject', 'tissue', 'chemo', 'IO', 'TKI']]
+def plot_volcano(type_summary, type='sender',fdr_threshold=0.05, mean_diff_threshold=1.0, figsize=(12, 6)):
+    """
+    Create faceted volcano plots by sender.
+    """
+    type_summary = type_summary.dropna(subset=['classification'])
+    df = type_summary.copy()
+    df['-log10(FDR)'] = -np.log10(df['glmm_fdr'].clip(lower=1e-10))
+    palette = sns.color_palette("tab20", df['classification'].nunique())
+    class_colors = {cls: color for cls, color in zip(sorted(df['classification'].unique()), palette)}
 
-min_subjects_per_condition=2
-min_total_subjects=8
-min_variance=1e-3
-threshold_value=-np.log10(0.2)
+    g = sns.FacetGrid(df, col=type, col_wrap=3, height=figsize[1], aspect=figsize[0]/figsize[1])
+    g.map_dataframe(
+        sns.scatterplot,
+        x='mean_diff',
+        y='-log10(FDR)',
+        hue='classification',
+        palette=class_colors,
+        alpha=0.8,
+        edgecolor=None,
+        legend='full'
+    )
 
-summary = summarize_lr_interactions(
-    liana_df,
-    metadata_df,
-    sample_groups,
-    threshold_value=threshold_value,
-    min_subjects_per_condition=min_subjects_per_condition,
-    min_total_subjects=min_total_subjects,
-    min_variance=min_variance
-)
-summary = summary.dropna(subset=['glmm_pval'])
+    for ax in g.axes.ravel():
+        ax.axhline(-np.log10(fdr_threshold), ls='--', color='black', linewidth=1)
+        ax.axvline(mean_diff_threshold, ls='--', color='black', linewidth=1)
+        ax.axvline(-mean_diff_threshold, ls='--', color='black', linewidth=1)
+        ax.set_xlabel('Mean diff (ADC→SCLC - De novo)')
+        ax.set_ylabel('-log10(FDR)')
 
-information = liana_df.loc[:, [
-    'interacting_pair', 'sender_receiver_pair', 'interaction_type',
-    'classification', 'active_TF']]
-information['active_TF'] = information['active_TF'].fillna('')
-information = information.rename(columns={'active_TF': 'active_TFs'})
-information = information.groupby([
-    'interacting_pair', 'sender_receiver_pair', 'interaction_type', 'classification'
-]).agg({
-    'active_TFs': lambda x: ';'.join(filter(None, x.unique()))
-})
-information = information.reset_index().drop_duplicates()
-summary = summary.merge(
-    information,
-    on=['interacting_pair', 'sender_receiver_pair'],
-    how='left'
-)
-summary.to_csv(
-    "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv",
-    index=False
-)
+    # Get legend handles from the first axis with data
+    for ax in g.axes.ravel():
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            g.fig.legend(handles, labels, title='Classification', bbox_to_anchor=(1.01, 0.5), loc='center left')
+            break
+
+    g.tight_layout()
+    plt.show()
+
+# # --------------------------------
+# liana_df = pd.read_csv(
+#     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df.csv"
+# )
+# metadata_df = pd.read_csv(
+#     '/data1/chanj3/HTA.lung.NE_plasticity.120122/ref/metadata_for_limma.csv'
+# )
+# metadata_df = metadata_df.rename(columns={'batch': 'sample', 'patient': 'subject'})
+# metadata_df = metadata_df.loc[:, [
+#     'sample', 'subject', 'tissue', 'chemo', 'IO', 'TKI']]
+
+# min_subjects_per_condition=2
+# min_total_subjects=8
+# min_variance=1e-3
+# threshold_value=-np.log10(0.2)
+
+# summary = summarize_lr_interactions(
+#     liana_df,
+#     metadata_df,
+#     sample_groups,
+#     threshold_value=threshold_value,
+#     min_subjects_per_condition=min_subjects_per_condition,
+#     min_total_subjects=min_total_subjects,
+#     min_variance=min_variance
+# )
+# summary = summary.dropna(subset=['glmm_pval'])
+
+# information = liana_df.loc[:, [
+#     'interacting_pair', 'sender_receiver_pair', 'interaction_type',
+#     'classification', 'active_TF']]
+# information['active_TF'] = information['active_TF'].fillna('')
+# information = information.rename(columns={'active_TF': 'active_TFs'})
+# information = information.groupby([
+#     'interacting_pair', 'sender_receiver_pair', 'interaction_type', 'classification'
+# ]).agg({
+#     'active_TFs': lambda x: ';'.join(filter(None, x.unique()))
+# })
+# information = information.reset_index().drop_duplicates()
+# summary = summary.merge(
+#     information,
+#     on=['interacting_pair', 'sender_receiver_pair'],
+#     how='left'
+# )
+# summary.to_csv(
+#     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv",
+#     index=False
+# )
+
 
 #--------------------------------
 # plot within tumor interactions
+summary = pd.read_csv(
+    "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv"
+)
 top_n = 20
-glmm_fdr_threshold = 0.2
+glmm_fdr_threshold = 0.05
 summary = summary[summary['glmm_fdr'] < glmm_fdr_threshold]
 standard_class_palette = generate_class_palette(summary['classification'].unique())
 within_tumor_ordering = [
@@ -266,6 +309,15 @@ within_tumor_ordering = [
 ]
 interaction_type = 'within_tumor'
 type_summary = summary[summary['interaction_type'] == interaction_type]
+type_summary['sender'] = type_summary['sender_receiver_pair'].str.split('→').str[0]
+type_summary['receiver'] = type_summary['sender_receiver_pair'].str.split('→').str[1]
+# remove autocrine interactions
+type_summary = type_summary[type_summary['sender'] != type_summary['receiver']]
+# make a volcano plot
+plot_volcano(type_summary, type='sender', figsize=(3, 3))
+plot_volcano(type_summary, type='receiver', figsize=(3, 3))
+
+row_order = []
 plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
