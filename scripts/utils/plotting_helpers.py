@@ -30,7 +30,7 @@ standard_class_palette = {
 
 def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
                               row_order=None, pval_threshold=None, pval_column='fisher_pval',
-                              facet_by=None, facet_order=None, show_TF_names=True):
+                              facet_by=None, facet_order=None, show_TF_names=True, mean_diff_column='mean_diff'):
     if pval_threshold is not None:
         type_summary = type_summary[type_summary[pval_column] < pval_threshold].copy()
     type_summary = type_summary.sort_values(pval_column)
@@ -82,7 +82,7 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
         opposite = 'receiver' if facet_by == 'sender' else 'sender'
         group['facet_column'] = group[opposite]
 
-        heatmap_data = group.pivot(index='interacting_pair', columns='facet_column', values='freq_diff').fillna(0)
+        heatmap_data = group.pivot(index='interacting_pair', columns='facet_column', values=mean_diff_column).fillna(0)
         tf_annot_matrix = group.pivot_table(
             index='interacting_pair',
             columns='facet_column',
@@ -129,12 +129,11 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=20)
 
     # Shared colorbar appended to last facet
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
     divider = make_axes_locatable(axs[-1])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     sm = plt.cm.ScalarMappable(cmap='RdBu_r')
-    sm.set_array([-1, 1])  # Dummy range, just for colorbar scale
-    fig.colorbar(sm, cax=cax, label='Frequency Difference\n(ADC → SCLC - De novo)')
+    sm.set_array([-3, 3])  # Dummy range, just for colorbar scale
+    fig.colorbar(sm, cax=cax, label='-log10(rho) Mean Difference\n(De novo - ADC)')
 
     # Legend
     classification_elements = [
