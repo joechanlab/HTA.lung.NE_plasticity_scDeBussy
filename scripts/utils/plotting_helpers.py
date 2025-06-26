@@ -10,17 +10,27 @@ import numpy as np
 import matplotlib.gridspec as gridspec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.patheffects as path_effects
+import scipy.cluster.hierarchy as sch
 
 def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='interaction_heatmap.png', top_n=30, figsize=(12, 6),
                               row_order=None, pval_threshold=None, pval_column='fisher_pval',
-                              facet_by=None, facet_order=None, show_TF_names=True, ranking_diff_column='mean_diff', viz_diff_column='mean_diff'):
+                              facet_by=None, facet_order=None, show_TF_names=True, ranking_column='mean_diff', viz_diff_column='mean_diff'):
+    # if facet_order is not None and facet_by is not None:
+    #     type_summary = type_summary[type_summary[facet_by].isin(facet_order)]
     if pval_threshold is not None:
         type_summary = type_summary[type_summary[pval_column] < pval_threshold].copy()
-    type_summary = type_summary.sort_values(ranking_diff_column, key=np.abs, ascending=False)
-    top_interactions = type_summary['interacting_pair'].drop_duplicates().head(top_n).copy()
+        print(f"Number of interactions after p-value filtering: {len(type_summary)}")
+    if ranking_column == 'glmm_fdr':
+        type_summary = type_summary.sort_values(ranking_column, ascending=True)
+    else:
+        type_summary = type_summary.sort_values(ranking_column, key=np.abs, ascending=False)
+    
     if row_order is not None:
-        top_interactions = top_interactions.loc[top_interactions['interacting_pair'].isin(row_order)]
-    top_interactions[['sender', 'receiver']] = top_interactions['sender_receiver_pair'].str.split('→', expand=True)
+        top_interactions = type_summary.loc[type_summary['interacting_pair'].isin(row_order)]
+    else:
+        top_interactions = type_summary['interacting_pair'].drop_duplicates().head(top_n).copy()
+        top_interactions = type_summary.loc[type_summary['interacting_pair'].isin(top_interactions)]
+    
     classification_map = top_interactions.set_index('interacting_pair')['classification'].to_dict()
     unique_classes = sorted(set(classification_map.values()))
     class_to_color = {cls: standard_class_palette.get(cls, 'gray') for cls in unique_classes}
@@ -37,17 +47,33 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
         facet_groups = {'All': top_interactions}
 
     if row_order is None:
-        all_ordered_rows = []
-        used_rows = set()
-        for _, group in facet_groups.items():
-            for col in group['sender_receiver_pair'].unique():
-                subset = group[group['sender_receiver_pair'] == col]
-                nonzero = subset['interacting_pair'].drop_duplicates().tolist()
-                for r in nonzero:
-                    if r not in used_rows:
-                        all_ordered_rows.append(r)
-                        used_rows.add(r)
-        row_order = all_ordered_rows
+        # Pivot values: rows = interacting_pair, cols = sender_receiver_pair
+        pivot_data = top_interactions.pivot_table(
+            index='interacting_pair',
+            columns='sender_receiver_pair',
+            values=viz_diff_column,
+            aggfunc='mean'
+        ).fillna(0)
+
+        # Basic metadata
+        pair_class = top_interactions.drop_duplicates('interacting_pair').set_index('interacting_pair')['classification']
+        row_info = pivot_data.copy()
+        row_info['classification'] = pair_class
+        row_info['avg_val'] = pivot_data.mean(axis=1)
+        row_info['all_zero'] = (pivot_data == 0).all(axis=1)
+
+        # Compute avg value per classification
+        class_avg = row_info.groupby('classification')['avg_val'].mean().sort_values(ascending=True)
+
+        # Sort rows: classification group order → nonzero first → avg_val ascending
+        ordered_rows = []
+        for cls in class_avg.index:
+            sub = row_info[row_info['classification'] == cls]
+            sub = sub.sort_values(by=['all_zero', 'avg_val'], ascending=[True, True])
+            ordered_rows.extend(sub.index.tolist())
+
+        row_order = ordered_rows
+    print(row_order)
 
     # Width ratios
     facet_col_counts = [len(g['receiver' if facet_by == 'sender' else 'sender'].unique())
@@ -56,7 +82,7 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
     width_ratios = [count / total_cols for count in facet_col_counts]
 
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(1, len(facet_groups), width_ratios=width_ratios)
+    gs = fig.add_gridspec(1, len(facet_groups), width_ratios=width_ratios, wspace=0.03)
     axs = [fig.add_subplot(gs[0, i]) for i in range(len(facet_groups))]
 
     heatmap_refs = []  # to keep a reference for colorbar scaling
@@ -115,10 +141,12 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
     divider = make_axes_locatable(axs[-1])
     cax = divider.append_axes("right", size="5%", pad=0.05)
     sm = plt.cm.ScalarMappable(cmap='RdBu_r')
-    sm.set_array([-1, 1])  # Dummy range, just for colorbar scale
+    
     if viz_diff_column == 'freq_diff':
+        sm.set_array([-1, 1])  # Dummy range, just for colorbar scale
         fig.colorbar(sm, cax=cax, label='Frequency Difference\n(ADC - De novo)')
     else:
+        sm.set_array([-2, 2])  # Dummy range, just for colorbar scale
         fig.colorbar(sm, cax=cax, label='Mean Score Difference\n(ADC - De novo)')
 
     # Legend
@@ -136,24 +164,81 @@ def plot_interaction_heatmap(type_summary, standard_class_palette, output_file='
                   bbox_to_anchor=(1.01, 1), loc='upper left')
         # Place circle legend at the bottom right
         fig.legend(handles=[circle_element], title='TF Activation',
-                  bbox_to_anchor=(0.99, 0.01), loc='lower right')
+                  bbox_to_anchor=(1.01, 0.05), loc='upper left')
     else:
         fig.legend(handles=classification_elements, title='Classification', 
                   bbox_to_anchor=(1.01, 1), loc='upper left')
 
     # Axis titles
-    fig.text(0.5, 0.04, f"{'Receiver' if facet_by == 'sender' else 'Sender'}", ha='center', fontsize=20)
+    fig.text(0.5, 0, f"{'Receiver' if facet_by == 'sender' else 'Sender'}", 
+             ha='center', fontsize=20)
     
     # Align facet label above y axis
     renderer = fig.canvas.get_renderer()
     bbox = axs[0].get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
     fig.text(bbox.x0, 0.96, f"{facet_by.capitalize()}:", ha='left', fontsize=20)
 
-    fig.tight_layout(rect=[0, 0.06, 0.9, 0.95])
+    fig.tight_layout(rect=[0, 0.12, 0.9, 0.95])
     if output_file is not None:
         fig.savefig(output_file, dpi=300, bbox_inches='tight')
         print(f"Faceted heatmap saved to {output_file}")
         plt.close()
+    
+def plot_volcano(type_summary, 
+                x_column='mean_diff',
+                y_column='glmm_fdr',
+                type='sender',
+                color_by=None,
+                fdr_threshold=0.05, 
+                mean_diff_threshold=1.0,
+                figsize=(12, 6),
+                save_file=None):
+    """
+    Create faceted volcano plots by sender.
+    """
+    type_summary = type_summary.dropna(subset=['classification'])
+    df = type_summary.copy()
+    if y_column == 'glmm_fdr':
+        df['-log10(FDR)'] = -np.log10(df['glmm_fdr'].clip(lower=1e-20))
+        y_column = '-log10(FDR)'
+    palette = sns.color_palette("tab20", df['classification'].nunique())
+    class_colors = {cls: color for cls, color in zip(sorted(df['classification'].unique()), palette)}
+
+    g = sns.FacetGrid(df, col=type, col_wrap=3, height=figsize[1], aspect=figsize[0]/figsize[1])
+    g.map_dataframe(
+        sns.scatterplot,
+        x=x_column,
+        y=y_column,
+        hue=color_by,
+        palette=class_colors,
+        alpha=0.8,
+        edgecolor=None,
+        legend='full'
+    )
+
+    for ax in g.axes.ravel():
+        ax.axhline(-np.log10(fdr_threshold), ls='--', color='black', linewidth=1)
+        ax.axvline(mean_diff_threshold, ls='--', color='black', linewidth=1)
+        ax.axvline(-mean_diff_threshold, ls='--', color='black', linewidth=1)
+        if x_column == 'freq_diff':
+            ax.set_xlabel('Frequency diff (ADC→SCLC - De novo)')
+        else:
+            ax.set_xlabel('Mean diff (ADC→SCLC - De novo)')
+        ax.set_ylabel('-log10(FDR)')
+
+    # Get legend handles from the first axis with data
+    for ax in g.axes.ravel():
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            g.fig.legend(handles, labels, title='Classification', bbox_to_anchor=(1.01, 0.5), loc='center left')
+            break
+
+    g.tight_layout()
+    if save_file is not None:
+        plt.savefig(save_file, dpi=300, bbox_inches='tight')
+        print(f"Volcano plot saved to {save_file}")
+    plt.show()
+    plt.close()
 
 
 def plot_lr_validation(adata, ligands, receptors, senders, receivers, cell_type_col='cell_type_fine', save_file=None):

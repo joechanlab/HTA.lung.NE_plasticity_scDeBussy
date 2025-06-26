@@ -8,8 +8,9 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import statsmodels.formula.api as smf
 from utils.data_helpers import sample_groups
-from utils.plotting_helpers import plot_interaction_heatmap
+from utils.plotting_helpers import plot_interaction_heatmap, plot_volcano
 import scanpy as sc
+import matplotlib.pyplot as plt
 
 sc.set_figure_params(fontsize=15)
 sns.set_style("ticks")
@@ -59,11 +60,9 @@ def prefilter_group_for_mixedlm(
     group_df,
     min_subjects_per_condition=3,
     min_total_subjects=6,
-    min_variance=1e-3
+    min_variance=1e-3,
+    min_nonflat_subjects_per_condition=2
 ):
-    """
-    Prefilter individual ligand-receptor groups before mixed model fitting.
-    """
     group_valid = group_df.dropna(subset=['transformed_score'])
 
     total_subjects = group_valid['subject'].nunique()
@@ -74,19 +73,27 @@ def prefilter_group_for_mixedlm(
     if variance is None or variance < min_variance:
         return False
 
+    # NEW: check number of non-flat subjects per condition
+    def nonflat(s):
+        return (s > 1e-5).sum()
+
+    nonflat_counts = group_valid.groupby('condition')['transformed_score'].apply(nonflat)
+    if any(nonflat_counts < min_nonflat_subjects_per_condition):
+        return False
+
     condition_counts = group_valid.groupby('condition')['subject'].nunique()
     if any(condition_counts < min_subjects_per_condition):
         return False
 
     return True
 
-def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_per_condition, min_total_subjects, min_variance):
+def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition):
     try:
         group = group.copy()
         group = group.dropna(subset=['transformed_score'])
 
         # Apply prefilter before model fitting
-        if not prefilter_group_for_mixedlm(group, min_subjects_per_condition, min_total_subjects, min_variance):
+        if not prefilter_group_for_mixedlm(group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition):
             return {
                 'interacting_pair': interacting_pair,
                 'sender_receiver_pair': sender_receiver_pair,
@@ -110,7 +117,15 @@ def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_pe
         formula = "transformed_score ~ condition + tissue + chemo + IO + TKI"
         model = smf.mixedlm(formula, data=group, groups=group['subject'])
         result = model.fit()
+        coef = result.params.get('condition[T.ADC → SCLC]', np.nan)
+        se = result.bse.get('condition[T.ADC → SCLC]', np.nan)
+
+        # Compute raw p-value
         pval = result.pvalues.get('condition[T.ADC → SCLC]', pd.NA)
+
+        # Flag unstable fits (extreme Wald Z-score)
+        if not pd.isna(coef) and not pd.isna(se) and abs(coef / se) > 30:
+            pval = pd.NA
     except Exception:
         pval = pd.NA
         mean_diff = pd.NA
@@ -170,7 +185,8 @@ def summarize_lr_interactions(
     n_jobs=4,
     min_subjects_per_condition=3,
     min_total_subjects=6,
-    min_variance=1e-3
+    min_variance=1e-3,
+    min_nonflat_subjects_per_condition=3
 ):
     relevance_df['sender_receiver_pair'] = (
         relevance_df['sender'] + '→' + relevance_df['receiver']
@@ -186,7 +202,7 @@ def summarize_lr_interactions(
     grouped = subject_df.groupby(['interacting_pair', 'sender_receiver_pair'])
     
     results = Parallel(n_jobs=n_jobs)(
-        delayed(process_group)(name[0], name[1], group, min_subjects_per_condition, min_total_subjects, min_variance)
+        delayed(process_group)(name[0], name[1], group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition)
         for name, group in tqdm(grouped, total=len(grouped))
     )
     
@@ -205,103 +221,70 @@ def summarize_lr_interactions(
     )
     return summary_df
 
-def plot_volcano(type_summary, type='sender',fdr_threshold=0.05, mean_diff_threshold=1.0, figsize=(12, 6)):
-    """
-    Create faceted volcano plots by sender.
-    """
-    type_summary = type_summary.dropna(subset=['classification'])
-    df = type_summary.copy()
-    df['-log10(FDR)'] = -np.log10(df['glmm_fdr'].clip(lower=1e-10))
-    palette = sns.color_palette("tab20", df['classification'].nunique())
-    class_colors = {cls: color for cls, color in zip(sorted(df['classification'].unique()), palette)}
-
-    g = sns.FacetGrid(df, col=type, col_wrap=3, height=figsize[1], aspect=figsize[0]/figsize[1])
-    g.map_dataframe(
-        sns.scatterplot,
-        x='mean_diff',
-        y='-log10(FDR)',
-        hue='classification',
-        palette=class_colors,
-        alpha=0.8,
-        edgecolor=None,
-        legend='full'
-    )
-
-    for ax in g.axes.ravel():
-        ax.axhline(-np.log10(fdr_threshold), ls='--', color='black', linewidth=1)
-        ax.axvline(mean_diff_threshold, ls='--', color='black', linewidth=1)
-        ax.axvline(-mean_diff_threshold, ls='--', color='black', linewidth=1)
-        ax.set_xlabel('Mean diff (ADC→SCLC - De novo)')
-        ax.set_ylabel('-log10(FDR)')
-
-    # Get legend handles from the first axis with data
-    for ax in g.axes.ravel():
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            g.fig.legend(handles, labels, title='Classification', bbox_to_anchor=(1.01, 0.5), loc='center left')
-            break
-
-    g.tight_layout()
-    plt.show()
-
 # # --------------------------------
-# liana_df = pd.read_csv(
-#     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df.csv"
-# )
-# metadata_df = pd.read_csv(
-#     '/data1/chanj3/HTA.lung.NE_plasticity.120122/ref/metadata_for_limma.csv'
-# )
-# metadata_df = metadata_df.rename(columns={'batch': 'sample', 'patient': 'subject'})
-# metadata_df = metadata_df.loc[:, [
-#     'sample', 'subject', 'tissue', 'chemo', 'IO', 'TKI']]
+liana_df = pd.read_csv(
+    "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df.csv"
+)
+metadata_df = pd.read_csv(
+    '/data1/chanj3/HTA.lung.NE_plasticity.120122/ref/metadata_for_limma.csv'
+)
+metadata_df = metadata_df.rename(columns={'batch': 'sample', 'patient': 'subject'})
+metadata_df = metadata_df.loc[:, [
+    'sample', 'subject', 'tissue', 'chemo', 'IO', 'TKI']]
 
-# min_subjects_per_condition=2
-# min_total_subjects=8
-# min_variance=1e-3
-# threshold_value=-np.log10(0.2)
+min_subjects_per_condition=2
+min_total_subjects=6
+min_variance=0
+min_nonflat_subjects_per_condition = 1
+threshold_value=-np.log10(0.5)
 
-# summary = summarize_lr_interactions(
-#     liana_df,
-#     metadata_df,
-#     sample_groups,
-#     threshold_value=threshold_value,
-#     min_subjects_per_condition=min_subjects_per_condition,
-#     min_total_subjects=min_total_subjects,
-#     min_variance=min_variance
-# )
-# summary = summary.dropna(subset=['glmm_pval'])
+summary = summarize_lr_interactions(
+    liana_df,
+    metadata_df,
+    sample_groups,
+    threshold_value=threshold_value,
+    min_subjects_per_condition=min_subjects_per_condition,
+    min_total_subjects=min_total_subjects,
+    min_variance=min_variance,
+    min_nonflat_subjects_per_condition=min_nonflat_subjects_per_condition
+)
+summary = summary.dropna(subset=['glmm_pval'])
 
-# information = liana_df.loc[:, [
-#     'interacting_pair', 'sender_receiver_pair', 'interaction_type',
-#     'classification', 'active_TF']]
-# information['active_TF'] = information['active_TF'].fillna('')
-# information = information.rename(columns={'active_TF': 'active_TFs'})
-# information = information.groupby([
-#     'interacting_pair', 'sender_receiver_pair', 'interaction_type', 'classification'
-# ]).agg({
-#     'active_TFs': lambda x: ';'.join(filter(None, x.unique()))
-# })
-# information = information.reset_index().drop_duplicates()
-# summary = summary.merge(
-#     information,
-#     on=['interacting_pair', 'sender_receiver_pair'],
-#     how='left'
-# )
-# summary.to_csv(
-#     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv",
-#     index=False
-# )
-
+information = liana_df.loc[:, [
+    'interacting_pair', 'sender_receiver_pair', 'interaction_type',
+    'classification', 'active_TF']]
+information['active_TF'] = information['active_TF'].fillna('')
+information = information.rename(columns={'active_TF': 'active_TFs'})
+information = information.groupby([
+    'interacting_pair', 'sender_receiver_pair', 'interaction_type', 'classification'
+]).agg({
+    'active_TFs': lambda x: ';'.join(filter(None, x.unique()))
+})
+information = information.reset_index().drop_duplicates()
+summary = summary.merge(
+    information,
+    on=['interacting_pair', 'sender_receiver_pair'],
+    how='left'
+)
+summary.to_csv(
+    "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv",
+    index=False
+)
 
 #--------------------------------
 # plot within tumor interactions
 summary = pd.read_csv(
     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv"
 )
-top_n = 20
-glmm_fdr_threshold = 0.05
+glmm_fdr_threshold = 0.1
+mean_diff_threshold=0
+freq_diff_threshold=0
 summary = summary[summary['glmm_fdr'] < glmm_fdr_threshold]
+top_n = 30
+summary[['sender', 'receiver']] = summary['sender_receiver_pair'].str.split('→', expand=True)
+#summary = summary[summary['sender'] != summary['receiver']]
 standard_class_palette = generate_class_palette(summary['classification'].unique())
+
 within_tumor_ordering = [
     "NSCLC",
     "SCLC-A",
@@ -309,93 +292,130 @@ within_tumor_ordering = [
 ]
 interaction_type = 'within_tumor'
 type_summary = summary[summary['interaction_type'] == interaction_type]
-type_summary['sender'] = type_summary['sender_receiver_pair'].str.split('→').str[0]
-type_summary['receiver'] = type_summary['sender_receiver_pair'].str.split('→').str[1]
-# remove autocrine interactions
-type_summary = type_summary[type_summary['sender'] != type_summary['receiver']]
-# make a volcano plot
-plot_volcano(type_summary, type='sender', figsize=(3, 3))
-plot_volcano(type_summary, type='receiver', figsize=(3, 3))
-
-row_order = []
-plot_interaction_heatmap(
+plot_volcano(type_summary,x_column='mean_diff',y_column='glmm_fdr',type='sender', 
+    figsize=(4, 4), fdr_threshold=glmm_fdr_threshold, mean_diff_threshold=mean_diff_threshold)
+type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
+type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
+row_order = [ 'WNT9A_FZD6_LRP5', 'WNT9A_FZD3_LRP5', 'WNT9A_FZD5_LRP5', 'WNT7B_FZD7_LRP6', 'WNT7B_FZD7_LRP5',
+             'APP_TNFRSF21', 'RELN_VLDLR', 'SLIT1_ROBO1', 'SLITRK2_PTPRD', 'BMP2_BMPR1A_BMPR2', 
+              'FGF9_FGFR3', 
+              'DSG2_DSC3', 'EFNA3_EPHA7', 'EFNB2_EPHA4', 'EFNA5_EPHA8',  'EFNA5_EPHA7','EFNA5_EPHB2', 'EFNB1_EPHB2',  'EFNB2_EPHB2',
+              'JAG2_NOTCH1', 'CNTN1_NOTCH1', 'DLK1_NOTCH2', 'DLL3_NOTCH1', 'JAG1_NOTCH1']
+row_order = plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
-    output_file=None, #f'../results/figures/liana_glmm_within_tumor_interactions_heatmap_sender_no_TF_names.png',
+    output_file=f'../results/figures/liana_glmm_within_tumor_interactions_heatmap_sender_no_TF_names.png',
     top_n=top_n,
     pval_threshold=glmm_fdr_threshold,
-    figsize=(10, 8),
-    row_order=None, #row_order,
+    figsize=(10, 11),
+    row_order=row_order,
     facet_by='sender',
     facet_order=within_tumor_ordering,
     show_TF_names=False,
     pval_column='glmm_fdr',
-    ranking_diff_column='freq_diff',
+    ranking_column='freq_diff',
     viz_diff_column='freq_diff'
 )
+print(row_order)
 
 #--------------------------------
 # plot tumor immune interactions
 interaction_type = 'tumor_immune'
 tumor_immune_ordering = [
+    "NSCLC",
     "SCLC-A",
     "SCLC-N",
 ]
 type_summary = summary[summary['interaction_type'] == interaction_type]
+type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
+# make a volcano plot
+plot_volcano(type_summary, type='sender', x_column='mean_diff', y_column='glmm_fdr', figsize=(3, 3), fdr_threshold=glmm_fdr_threshold, mean_diff_threshold=mean_diff_threshold)
+row_order = [
+            'PODXL2_SELL',
+            'APP_CD74',
+            'APP_TNFRSF21',
+            'JAG2_NOTCH2',
+            'JAG1_NOTCH2',
+            'DLL3_NOTCH2',
+            'DLK1_NOTCH1',
+            'DLK1_NOTCH2',
+            'DLL3_NOTCH1',
+            'DLL4_NOTCH1',
+            'DLL4_NOTCH2',
+            'SEMA4D_PLXNB2',
+            'TNFSF12_TNFRSF12A',
+            'TNF_TNFRSF1A',
+            'TNFSF12_TNFRSF25',
+            'TNFSF10_TNFRSF11B',
+            'TNF_TNFRSF1B',
+            'VEGFA_NRP2',
+            'GAS6_MERTK',
+            'CXCL12_CXCR4',
+            'CXCL16_CXCR6',
+            ]
+type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
+type_summary = type_summary[type_summary['freq_diff'].abs() > freq_diff_threshold]
 plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
-    output_file=None, #f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_sender_no_TF_names.png',
+    output_file=f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_sender_no_TF_names.png',
     top_n=top_n,
     pval_threshold=glmm_fdr_threshold,
-    figsize=(10, 8),
-    row_order=None, #row_order,
+    figsize=(10, 11),
+    row_order=row_order, #row_order,
     facet_by='sender',
     facet_order=tumor_immune_ordering,
     show_TF_names=False,
     pval_column='glmm_fdr',
-    ranking_diff_column='freq_diff',
+    ranking_column='freq_diff',
     viz_diff_column='freq_diff'
 )
 plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
-    output_file=None, #f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_receiver_no_TF_names.png',
+    output_file=f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_receiver_no_TF_names.png',
     top_n=top_n,
     pval_threshold=glmm_fdr_threshold,
-    figsize=(10, 8),
+    figsize=(10, 11),
     show_TF_names=False,
-    row_order=None, #row_order,
+    row_order=row_order, #row_order,
     facet_by='receiver',
     facet_order=tumor_immune_ordering,
     pval_column='glmm_fdr',
-    ranking_diff_column='freq_diff',
+    ranking_column='freq_diff',
     viz_diff_column='freq_diff'
 )
 
-#--------------------------------
-# plot tumor stromal interactions
-interaction_type = 'tumor_stromal'
-tumor_stromal_ordering = [
-    "SCLC-A",
-    "SCLC-N",
-    "Endothelial",
-    "Fibroblast",
-]
-type_summary = summary[summary['interaction_type'] == interaction_type]
-if len(type_summary) > 0:
-    plot_interaction_heatmap(
-        type_summary,
-        standard_class_palette,
-        output_file=None, #f'../results/figures/liana_glmm_tumor_stromal_interactions_heatmap_sender_no_TF_names.png',
-        top_n=top_n,
-        pval_threshold=glmm_fdr_threshold,
-        figsize=(10, 8),
-        row_order=None, #row_order,
-        facet_by='sender',
-        facet_order=tumor_stromal_ordering,
-        show_TF_names=False,
-        pval_column='glmm_fdr',
-        ranking_diff_column='freq_diff',
-        viz_diff_column='mean_diff'
-    )
+# #--------------------------------
+# # plot tumor stromal interactions
+# interaction_type = 'tumor_stromal'
+# glmm_fdr_threshold = 0.05
+# mean_diff_threshold=0.1
+# tumor_stromal_ordering = [
+#     "NSCLC",
+#     "SCLC-A",
+#     "SCLC-N",
+#     "Endothelial",
+#     "Fibroblast",
+# ]
+# type_summary = summary[summary['interaction_type'] == interaction_type]
+# type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
+# if len(type_summary) > 0:
+#     plot_volcano(type_summary, type='sender', figsize=(3, 3))
+#     plot_volcano(type_summary, type='receiver', figsize=(3, 3))
+#     type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
+#     plot_interaction_heatmap(
+#         type_summary,
+#         standard_class_palette,
+#         output_file=None, #f'../results/figures/liana_glmm_tumor_stromal_interactions_heatmap_sender_no_TF_names.png',
+#         top_n=top_n,
+#         pval_threshold=glmm_fdr_threshold,
+#         figsize=(10, 8),
+#         row_order=None, #row_order,
+#         facet_by='sender',
+#         facet_order=tumor_stromal_ordering,
+#         show_TF_names=False,
+#         pval_column='glmm_fdr',
+#         ranking_column='mean_diff',
+#         viz_diff_column='mean_diff'
+#     )
