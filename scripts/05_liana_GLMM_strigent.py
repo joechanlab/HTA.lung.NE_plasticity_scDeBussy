@@ -56,7 +56,8 @@ def prefilter_group_for_mixedlm(
     min_subjects_per_condition=3,
     min_total_subjects=6,
     min_variance=1e-3,
-    min_nonflat_subjects_per_condition=2
+    min_nonflat_subjects_per_condition=0, 
+    total_nonflat_subjects = 2
 ):
     group_valid = group_df.dropna(subset=['transformed_score'])
 
@@ -72,6 +73,10 @@ def prefilter_group_for_mixedlm(
     def nonflat(s):
         return (s > 1e-5).sum()
 
+    total_nonflat_counts = nonflat(group_valid['transformed_score'])
+    if total_nonflat_counts < total_nonflat_subjects:
+        return False
+
     nonflat_counts = group_valid.groupby('condition')['transformed_score'].apply(nonflat)
     if any(nonflat_counts < min_nonflat_subjects_per_condition):
         return False
@@ -82,13 +87,13 @@ def prefilter_group_for_mixedlm(
 
     return True
 
-def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition):
+def process_group(interacting_pair, sender_receiver_pair, group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition, total_nonflat_subjects):
     try:
         group = group.copy()
         group = group.dropna(subset=['transformed_score'])
 
         # Apply prefilter before model fitting
-        if not prefilter_group_for_mixedlm(group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition):
+        if not prefilter_group_for_mixedlm(group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition, total_nonflat_subjects):
             return {
                 'interacting_pair': interacting_pair,
                 'sender_receiver_pair': sender_receiver_pair,
@@ -181,7 +186,8 @@ def summarize_lr_interactions(
     min_subjects_per_condition=3,
     min_total_subjects=6,
     min_variance=1e-3,
-    min_nonflat_subjects_per_condition=3
+    min_nonflat_subjects_per_condition=0,
+    total_nonflat_subjects=2
 ):
     relevance_df['sender_receiver_pair'] = (
         relevance_df['sender'] + '→' + relevance_df['receiver']
@@ -197,7 +203,7 @@ def summarize_lr_interactions(
     grouped = subject_df.groupby(['interacting_pair', 'sender_receiver_pair'])
     
     results = Parallel(n_jobs=n_jobs)(
-        delayed(process_group)(name[0], name[1], group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition)
+        delayed(process_group)(name[0], name[1], group, min_subjects_per_condition, min_total_subjects, min_variance, min_nonflat_subjects_per_condition, total_nonflat_subjects)
         for name, group in tqdm(grouped, total=len(grouped))
     )
     
@@ -230,7 +236,8 @@ metadata_df = metadata_df.loc[:, [
 min_subjects_per_condition=2
 min_total_subjects=6
 min_variance=0
-min_nonflat_subjects_per_condition = 1
+min_nonflat_subjects_per_condition = 0
+total_nonflat_subjects = 2
 threshold_value=-np.log10(0.5)
 
 summary = summarize_lr_interactions(
@@ -241,7 +248,8 @@ summary = summarize_lr_interactions(
     min_subjects_per_condition=min_subjects_per_condition,
     min_total_subjects=min_total_subjects,
     min_variance=min_variance,
-    min_nonflat_subjects_per_condition=min_nonflat_subjects_per_condition
+    min_nonflat_subjects_per_condition=min_nonflat_subjects_per_condition,
+    total_nonflat_subjects=total_nonflat_subjects
 )
 summary = summary.dropna(subset=['glmm_pval'])
 
