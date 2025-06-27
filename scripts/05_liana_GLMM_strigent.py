@@ -42,17 +42,12 @@ def aggregate_subjects(relevance_df, score_column):
         relevance_df[score_column].clip(lower=1e-10)
     )
     agg = relevance_df.groupby([
-        'interacting_pair', 'classification', 'sender_receiver_pair', 'subject'
+        'interacting_pair', 'classification', 'sender_receiver_pair', 'subject', 
+        'sender', 'receiver', 'condition',
+        'tissue', 'chemo', 'IO', 'TKI',
     ]).agg({
-        'sender': 'first',
-        'receiver': 'first',
-        'condition': 'first',
-        'tissue': 'first',
-        'chemo': 'first',
-        'IO': 'first',
-        'TKI': 'first',
         'active_TFs': lambda x: ';'.join(filter(None, x.unique())),
-        'transformed_score': 'mean'
+        'transformed_score': 'max'
     }).reset_index()
     return agg
 
@@ -221,7 +216,7 @@ def summarize_lr_interactions(
     )
     return summary_df
 
-# # --------------------------------
+# --------------------------------
 liana_df = pd.read_csv(
     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df.csv"
 )
@@ -276,13 +271,12 @@ summary.to_csv(
 summary = pd.read_csv(
     "/home/wangm10/HTA.lung.NE_plasticity_scDeBussy/results/tables/liana_df_glmm.csv"
 )
-glmm_fdr_threshold = 0.1
+glmm_fdr_threshold = 0.05
 mean_diff_threshold=0
 freq_diff_threshold=0
 summary = summary[summary['glmm_fdr'] < glmm_fdr_threshold]
 top_n = 30
 summary[['sender', 'receiver']] = summary['sender_receiver_pair'].str.split('→', expand=True)
-#summary = summary[summary['sender'] != summary['receiver']]
 standard_class_palette = generate_class_palette(summary['classification'].unique())
 
 within_tumor_ordering = [
@@ -296,19 +290,14 @@ plot_volcano(type_summary,x_column='mean_diff',y_column='glmm_fdr',type='sender'
     figsize=(4, 4), fdr_threshold=glmm_fdr_threshold, mean_diff_threshold=mean_diff_threshold)
 type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
 type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
-row_order = [ 'WNT9A_FZD6_LRP5', 'WNT9A_FZD3_LRP5', 'WNT9A_FZD5_LRP5', 'WNT7B_FZD7_LRP6', 'WNT7B_FZD7_LRP5',
-             'APP_TNFRSF21', 'RELN_VLDLR', 'SLIT1_ROBO1', 'SLITRK2_PTPRD', 'BMP2_BMPR1A_BMPR2', 
-              'FGF9_FGFR3', 
-              'DSG2_DSC3', 'EFNA3_EPHA7', 'EFNB2_EPHA4', 'EFNA5_EPHA8',  'EFNA5_EPHA7','EFNA5_EPHB2', 'EFNB1_EPHB2',  'EFNB2_EPHB2',
-              'JAG2_NOTCH1', 'CNTN1_NOTCH1', 'DLK1_NOTCH2', 'DLL3_NOTCH1', 'JAG1_NOTCH1']
 row_order = plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
-    output_file=f'../results/figures/liana_glmm_within_tumor_interactions_heatmap_sender_no_TF_names.png',
+    output_file=None, #f'../results/figures/liana_glmm_within_tumor_interactions_heatmap_sender_no_TF_names.png',
     top_n=top_n,
     pval_threshold=glmm_fdr_threshold,
     figsize=(10, 11),
-    row_order=row_order,
+    row_order=None,
     facet_by='sender',
     facet_order=within_tumor_ordering,
     show_TF_names=False,
@@ -330,39 +319,16 @@ type_summary = summary[summary['interaction_type'] == interaction_type]
 type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
 # make a volcano plot
 plot_volcano(type_summary, type='sender', x_column='mean_diff', y_column='glmm_fdr', figsize=(3, 3), fdr_threshold=glmm_fdr_threshold, mean_diff_threshold=mean_diff_threshold)
-row_order = [
-            'PODXL2_SELL',
-            'APP_CD74',
-            'APP_TNFRSF21',
-            'JAG2_NOTCH2',
-            'JAG1_NOTCH2',
-            'DLL3_NOTCH2',
-            'DLK1_NOTCH1',
-            'DLK1_NOTCH2',
-            'DLL3_NOTCH1',
-            'DLL4_NOTCH1',
-            'DLL4_NOTCH2',
-            'SEMA4D_PLXNB2',
-            'TNFSF12_TNFRSF12A',
-            'TNF_TNFRSF1A',
-            'TNFSF12_TNFRSF25',
-            'TNFSF10_TNFRSF11B',
-            'TNF_TNFRSF1B',
-            'VEGFA_NRP2',
-            'GAS6_MERTK',
-            'CXCL12_CXCR4',
-            'CXCL16_CXCR6',
-            ]
 type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
 type_summary = type_summary[type_summary['freq_diff'].abs() > freq_diff_threshold]
 plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
-    output_file=f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_sender_no_TF_names.png',
+    output_file=None, #f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_sender_no_TF_names.png',
     top_n=top_n,
     pval_threshold=glmm_fdr_threshold,
     figsize=(10, 11),
-    row_order=row_order, #row_order,
+    row_order=None, #row_order,
     facet_by='sender',
     facet_order=tumor_immune_ordering,
     show_TF_names=False,
@@ -373,12 +339,12 @@ plot_interaction_heatmap(
 plot_interaction_heatmap(
     type_summary,
     standard_class_palette,
-    output_file=f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_receiver_no_TF_names.png',
+    output_file=None, #f'../results/figures/liana_glmm_tumor_immune_interactions_heatmap_receiver_no_TF_names.png',
     top_n=top_n,
     pval_threshold=glmm_fdr_threshold,
     figsize=(10, 11),
     show_TF_names=False,
-    row_order=row_order, #row_order,
+    row_order=None, #row_order,
     facet_by='receiver',
     facet_order=tumor_immune_ordering,
     pval_column='glmm_fdr',
@@ -386,36 +352,34 @@ plot_interaction_heatmap(
     viz_diff_column='freq_diff'
 )
 
-# #--------------------------------
-# # plot tumor stromal interactions
-# interaction_type = 'tumor_stromal'
-# glmm_fdr_threshold = 0.05
-# mean_diff_threshold=0.1
-# tumor_stromal_ordering = [
-#     "NSCLC",
-#     "SCLC-A",
-#     "SCLC-N",
-#     "Endothelial",
-#     "Fibroblast",
-# ]
-# type_summary = summary[summary['interaction_type'] == interaction_type]
-# type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
-# if len(type_summary) > 0:
-#     plot_volcano(type_summary, type='sender', figsize=(3, 3))
-#     plot_volcano(type_summary, type='receiver', figsize=(3, 3))
-#     type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
-#     plot_interaction_heatmap(
-#         type_summary,
-#         standard_class_palette,
-#         output_file=None, #f'../results/figures/liana_glmm_tumor_stromal_interactions_heatmap_sender_no_TF_names.png',
-#         top_n=top_n,
-#         pval_threshold=glmm_fdr_threshold,
-#         figsize=(10, 8),
-#         row_order=None, #row_order,
-#         facet_by='sender',
-#         facet_order=tumor_stromal_ordering,
-#         show_TF_names=False,
-#         pval_column='glmm_fdr',
-#         ranking_column='mean_diff',
-#         viz_diff_column='mean_diff'
-#     )
+#--------------------------------
+# plot tumor stromal interactions
+interaction_type = 'tumor_stromal'
+tumor_stromal_ordering = [
+    "NSCLC",
+    "SCLC-A",
+    "SCLC-N",
+    "Endothelial",
+    "Fibroblast",
+]
+type_summary = summary[summary['interaction_type'] == interaction_type]
+type_summary = type_summary[type_summary['glmm_fdr'] < glmm_fdr_threshold]
+if len(type_summary) > 0:
+    plot_volcano(type_summary, type='sender', figsize=(3, 3))
+    plot_volcano(type_summary, type='receiver', figsize=(3, 3))
+    type_summary = type_summary[type_summary['mean_diff'].abs() > mean_diff_threshold]
+    plot_interaction_heatmap(
+        type_summary,
+        standard_class_palette,
+        output_file=None, #f'../results/figures/liana_glmm_tumor_stromal_interactions_heatmap_sender_no_TF_names.png',
+        top_n=top_n,
+        pval_threshold=glmm_fdr_threshold,
+        figsize=(10, 8),
+        row_order=None, #row_order,
+        facet_by='sender',
+        facet_order=tumor_stromal_ordering,
+        show_TF_names=False,
+        pval_column='glmm_fdr',
+        ranking_column='mean_diff',
+        viz_diff_column='mean_diff'
+    )
